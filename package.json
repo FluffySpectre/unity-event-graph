@@ -1,0 +1,14 @@
+{
+    "name": "com.fluffyspectre.unityeventgraph",
+    "version": "1.0.0",
+    "displayName": "Unity Event Graph",
+    "description": "Visualizes UnityEvents in a scene as a graph",
+    "unity": "2020.3",
+    "author": {
+      "name": "Björn Bosse",
+      "email": "mail@sennio.de",
+      "url": "https://sennio.de"
+    },
+    "license": "MIT",
+    "dependencies": {}
+}
