@@ -4,6 +4,8 @@ Visualizes UnityEvents in a scene as a graph.
 
 ![Screenshot](Media/screenshot1.png)
 
+![Event Tracking](Media/event_tracking.gif)
+
 ## Installation
 
 Open the Package Manager in Unity (`Window` > `Package Manager`), click on the "+" button, select "Add package from git URL...", and paste the following URL:
@@ -19,8 +21,6 @@ Alternatively, you can add the following line to your manifest.json file located
 ```
 
 ## Basic Usage
-
-To use the Unity Event Graph, follow these steps:
 
 1. **Open the Unity Event Graph Window**:
     - In the Unity-Menubar go to `Window` > `Event Graph`.
