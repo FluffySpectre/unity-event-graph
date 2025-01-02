@@ -405,7 +405,6 @@ namespace FluffySpectre.UnityEventGraph
             foreach (var kvp in _highlightedPorts)
             {
                 kvp.Key.portColor = Color.white;
-                kvp.Key.contentContainer.Q<Label>().style.color = Color.white;
             }
             _highlightedPorts.Clear();
         }
@@ -432,8 +431,6 @@ namespace FluffySpectre.UnityEventGraph
             foreach (var edge in edges)
             {
                 HighlightEdge(edge, duration);
-
-                HighlightPort(edge.input as UnityEventPort, duration);
 
                 var targetNode = edge.input.node as UnityEventNode;
                 if (targetNode != null)
@@ -496,7 +493,6 @@ namespace FluffySpectre.UnityEventGraph
             foreach (var port in portsToReset)
             {
                 port.portColor = Color.white;
-                port.contentContainer.Q<Label>().style.color = Color.white;
                 _highlightedPorts.Remove(port);
             }
         }
@@ -527,8 +523,6 @@ namespace FluffySpectre.UnityEventGraph
         private void HighlightPort(UnityEventPort port, double duration = 1.0)
         {
             port.portColor = Color.yellow;
-            port.contentContainer.Q<Label>().style.color = Color.yellow;
-
             double resetTime = EditorApplication.timeSinceStartup + duration;
 
             if (!_highlightedPorts.ContainsKey(port) || _highlightedPorts[port] < resetTime)
