@@ -25,7 +25,7 @@ namespace FluffySpectre.UnityEventGraph
         private VisualElement _mainContainer;
         private bool _isPanelVisible = false;
         private Dictionary<UnityEventNode, double> _highlightedNodes = new();
-        private Dictionary<Port, double> _highlightedPorts = new();
+        private Dictionary<UnityEventPort, double> _highlightedPorts = new();
         private Dictionary<Edge, double> _highlightedEdges = new();
         private GraphFilterManager _filterManager;
         private GameObject[] _lastAnalyzedGameObjects;
@@ -433,7 +433,7 @@ namespace FluffySpectre.UnityEventGraph
             {
                 HighlightEdge(edge, duration);
 
-                HighlightPort(edge.input, duration);
+                HighlightPort(edge.input as UnityEventPort, duration);
 
                 var targetNode = edge.input.node as UnityEventNode;
                 if (targetNode != null)
@@ -454,7 +454,7 @@ namespace FluffySpectre.UnityEventGraph
             double currentTime = EditorApplication.timeSinceStartup;
             var nodesToReset = new List<UnityEventNode>();
             var edgesToReset = new List<Edge>();
-            var portsToReset = new List<Port>();
+            var portsToReset = new List<UnityEventPort>();
 
             foreach (var kvp in _highlightedNodes)
             {
@@ -524,7 +524,7 @@ namespace FluffySpectre.UnityEventGraph
             }
         }
 
-        private void HighlightPort(Port port, double duration = 1.0)
+        private void HighlightPort(UnityEventPort port, double duration = 1.0)
         {
             port.portColor = Color.yellow;
             port.contentContainer.Q<Label>().style.color = Color.yellow;

@@ -1,44 +1,19 @@
 using System;
 using UnityEditor.Experimental.GraphView;
-using UnityEngine;
-using UnityEngine.UIElements;
-
-using FluffySpectre.UnityEventGraph.PortContext;
 
 namespace FluffySpectre.UnityEventGraph
 {
     public class UnityEventPort : Port
     {
-        private Component _component;
+        public string FullPortName { get; set; }
 
-        public static UnityEventPort Create(Orientation orientation, Direction direction, Capacity capacity, Type type, Component component)
+        public static UnityEventPort Create(Orientation orientation, Direction direction, Capacity capacity, Type type)
         {
-            var port = new UnityEventPort(orientation, direction, capacity, type, component);
-            port.InitializeContext();
-            return port;
+            return new UnityEventPort(orientation, direction, capacity, type);
         }
 
-        private UnityEventPort(Orientation orientation, Direction direction, Capacity capacity, Type type, Component component) : base(orientation, direction, capacity, type)
+        public UnityEventPort(Orientation orientation, Direction direction, Capacity capacity, Type type) : base(orientation, direction, capacity, type)
         {
-            _component = component;
-        }
-
-        private void InitializeContext()
-        {
-            if (_component == null)
-                return;
-
-            var provider = PortContextProviderRegistry.GetProviderFor(_component);
-            if (provider != null)
-            {
-                VisualElement element = provider.GetVisualElement(_component);
-                if (element != null)
-                {
-                    contentContainer.Add(element);
-
-                    style.height = element.resolvedStyle.height;
-                }
-            }
         }
     }
 }

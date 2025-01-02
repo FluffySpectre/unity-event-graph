@@ -13,12 +13,12 @@ namespace FluffySpectre.UnityEventGraph
         public static UnityEventEdge CreateEdge(EdgeData edgeData)
         {
             var sourcePort = edgeData.Source.outputContainer.Children()
-                .OfType<Port>()
-                .FirstOrDefault(port => port.portName == edgeData.SourcePortName);
+                .OfType<UnityEventPort>()
+                .FirstOrDefault(port => port.FullPortName == edgeData.SourcePortName);
 
             var targetPort = edgeData.Target.inputContainer.Children()
-                .OfType<Port>()
-                .FirstOrDefault(port => port.portName == edgeData.TargetPortName);
+                .OfType<UnityEventPort>()
+                .FirstOrDefault(port => port.FullPortName == edgeData.TargetPortName);
 
             if (sourcePort == null || targetPort == null)
             {

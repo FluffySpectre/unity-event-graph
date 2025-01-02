@@ -13,7 +13,7 @@ namespace FluffySpectre.UnityEventGraph
         public GameObject RepresentedObject { get; }
 
         private Dictionary<string, UnityEventBase> _outputPorts = new();
-        private Dictionary<UnityEventBase, Port> _unityEventToPort = new();
+        private Dictionary<UnityEventBase, UnityEventPort> _unityEventToPort = new();
 
         private readonly Color _startNodeColor = new(193f / 255f, 83f / 255f, 32f / 255f);
         private readonly Color _endNodeColor = new(56f / 255f, 111f / 255f, 164f / 255f);
@@ -44,19 +44,18 @@ namespace FluffySpectre.UnityEventGraph
             return _isVisible;
         }
 
-        public void AddInputPort(string componentName, string methodName, Component component = null)
+        public void AddInputPort(string portName, Component component = null)
         {
-            string portName = $"{componentName}.{methodName}";
-
             bool portExists = inputContainer.Children()
-                .OfType<Port>()
-                .Any(port => port.portName == portName);
+                .OfType<UnityEventPort>()
+                .Any(port => port.FullPortName == portName);
 
             if (!portExists)
             {
-                var inputPort = UnityEventPort.Create(Orientation.Horizontal, Direction.Input, Port.Capacity.Single, typeof(UnityEngine.Object), component);
+                var inputPort = UnityEventInputPort.Create(Orientation.Horizontal, Direction.Input, Port.Capacity.Single, typeof(UnityEngine.Object), component);
                 
-                inputPort.portName = portName;
+                inputPort.FullPortName = portName;
+                inputPort.portName = GetPortDisplayName(portName);
                 inputPort.pickingMode = PickingMode.Ignore;
 
                 inputContainer.Add(inputPort);
@@ -71,13 +70,15 @@ namespace FluffySpectre.UnityEventGraph
         public void AddOutputPort(string portName, UnityEventBase unityEvent)
         {
             bool portExists = outputContainer.Children()
-                .OfType<Port>()
-                .Any(port => port.portName == portName);
+                .OfType<UnityEventPort>()
+                .Any(port => port.FullPortName == portName);
 
             if (!portExists)
             {
-                var outputPort = InstantiatePort(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, typeof(UnityEngine.Object));
-                outputPort.portName = portName;
+                var outputPort = UnityEventPort.Create(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, typeof(UnityEngine.Object));
+                
+                outputPort.FullPortName = portName;
+                outputPort.portName = GetPortDisplayName(portName);
                 outputPort.pickingMode = PickingMode.Ignore;
                 outputContainer.Add(outputPort);
 
@@ -105,9 +106,9 @@ namespace FluffySpectre.UnityEventGraph
 
         public void UpdateInvocationData()
         {
-            foreach (var port in outputContainer.Children().OfType<Port>())
+            foreach (var port in outputContainer.Children().OfType<UnityEventPort>())
             {
-                if (_outputPorts.TryGetValue(port.portName, out var unityEvent))
+                if (_outputPorts.TryGetValue(port.FullPortName, out var unityEvent))
                 {
                     UpdatePortLabel(port, unityEvent);
                     UpdateEdgeLabels(port, unityEvent);
@@ -134,7 +135,7 @@ namespace FluffySpectre.UnityEventGraph
             UpdateNodeColor();
         }
 
-        public bool TryGetPortForUnityEvent(UnityEventBase unityEvent, out Port port)
+        public bool TryGetPortForUnityEvent(UnityEventBase unityEvent, out UnityEventPort port)
         {
             return _unityEventToPort.TryGetValue(unityEvent, out port);
         }
@@ -187,6 +188,17 @@ namespace FluffySpectre.UnityEventGraph
                     }
                 }
             }
+        }
+
+        private string GetPortDisplayName(string portName)
+        {
+            // Strip the name of the GameObject from the port name
+            if (portName.Count(c => c == '.') >= 2)
+            {
+                return portName.Substring(portName.IndexOf('.') + 1);
+            }
+
+            return portName;
         }
 
         private void UpdateNodeColor()

@@ -146,7 +146,7 @@ namespace FluffySpectre.UnityEventGraph
             AnalyzeComponentFields(component, (comp, fieldName, unityEvent) =>
             {
                 hasUnityEvent = true;
-                string portName = $"{comp.GetType().Name}.{fieldName}";
+                string portName = $"{comp.gameObject.name}.{comp.GetType().Name}.{fieldName}";
 
                 AnalyzeUnityEvent(comp, portName, unityEvent, nodes, edges);
             });
@@ -224,15 +224,15 @@ namespace FluffySpectre.UnityEventGraph
         {
             var sourceNode = FindOrCreateNode(component.gameObject, nodes);
 
-            AnalyzeUnityEventWithPredicate(sourceNode, sourcePortName, unityEvent, nodes, edges, target => true);
+            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, target => true);
         }
 
         private void AnalyzeUnityEventForReferences(Component component, string eventName, UnityEventBase unityEvent, GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges)
         {
             var sourceNode = FindOrCreateNode(component.gameObject, nodes);
-            string sourcePortName = $"{component.GetType().Name}.{eventName}";
+            string sourcePortName = $"{component.gameObject.name}.{component.GetType().Name}.{eventName}";
 
-            AnalyzeUnityEventWithPredicate(sourceNode, sourcePortName, unityEvent, nodes, edges, target =>
+            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, target =>
             {
                 if (target is Component targetComponent)
                 {
@@ -249,7 +249,7 @@ namespace FluffySpectre.UnityEventGraph
             });
         }
 
-        private void AnalyzeUnityEventWithPredicate(UnityEventNode sourceNode, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges, Func<UnityEngine.Object, bool> targetPredicate)
+        private void AnalyzeUnityEventWithPredicate(Component sourceComponent, UnityEventNode sourceNode, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges, Func<UnityEngine.Object, bool> targetPredicate)
         {
             var calls = GetPersistentCalls(unityEvent);
             if (calls == null) return;
@@ -277,14 +277,14 @@ namespace FluffySpectre.UnityEventGraph
                 if (target is Component targetComponent)
                 {
                     targetNode = FindOrCreateNode(targetComponent.gameObject, nodes);
-                    targetPortName = $"{targetComponent.GetType().Name}.{methodName}";
-                    targetNode.AddInputPort(targetComponent.GetType().Name, methodName, targetComponent);
+                    targetPortName = $"{targetComponent.gameObject.name}.{targetComponent.GetType().Name}.{methodName}";
+                    targetNode.AddInputPort(targetPortName, targetComponent);
                 }
                 else if (target is GameObject targetGameObject)
                 {
                     targetNode = FindOrCreateNode(targetGameObject, nodes);
                     targetPortName = $"{targetGameObject.name}.{methodName}";
-                    targetNode.AddInputPort(targetGameObject.name, methodName);
+                    targetNode.AddInputPort(targetPortName);
                 }
 
                 if (targetNode != null)
