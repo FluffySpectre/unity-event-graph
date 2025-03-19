@@ -60,9 +60,18 @@ namespace FluffySpectre.UnityEventGraph
 
     public class EventGraphAnalyzer
     {
+        // Type caching for performance
+        private static HashSet<Type> _knownUnityEventContainerTypes = new HashSet<Type>();
+        private static HashSet<Type> _knownNonUnityEventTypes = new HashSet<Type>();
+        
+        // Configuration
+        private const int MAX_RECURSION_DEPTH = 5;
+        private const int MAX_COLLECTION_ITEMS = 1000;
+
         public NodeGraphData SavedNodeGraphData { get; set; }
 
         private Dictionary<UnityEventBase, Delegate> _trackingDelegates = new();
+        private Dictionary<Type, Dictionary<string, Delegate>> _delegatePool = new Dictionary<Type, Dictionary<string, Delegate>>();
 
         public EventGraphData AnalyzeScene(GameObject[] selectedGameObjects = null, bool searchDirectReferencesOfSelectedComponents = false)
         {
@@ -121,14 +130,39 @@ namespace FluffySpectre.UnityEventGraph
             foreach (var component in gameObject.GetComponents<Component>())
             {
                 if (component == null) continue;
-
-                AnalyzeComponentForReferences(component, selectedGameObjects, nodes, edges);
+                
+                // Check if component type might contain UnityEvents before analyzing
+                if (TypeMightContainUnityEvents(component.GetType()))
+                {
+                    AnalyzeComponentForReferences(component, selectedGameObjects, nodes, edges);
+                }
             }
 
             foreach (Transform child in gameObject.transform)
             {
                 FindReferencesInGameObject(child.gameObject, selectedGameObjects, nodes, edges, visitedGameObjects);
             }
+        }
+
+        private bool TypeMightContainUnityEvents(Type type)
+        {
+            if (_knownUnityEventContainerTypes.Contains(type))
+                return true;
+            if (_knownNonUnityEventTypes.Contains(type))
+                return false;
+                
+            // Check and cache the result
+            bool mightContain = typeof(UnityEventBase).IsAssignableFrom(type) || 
+                                type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                                    .Any(f => typeof(UnityEventBase).IsAssignableFrom(f.FieldType) || 
+                                            (f.FieldType.IsClass && !f.FieldType.IsPrimitive && f.FieldType != typeof(string)));
+                                    
+            if (mightContain)
+                _knownUnityEventContainerTypes.Add(type);
+            else
+                _knownNonUnityEventTypes.Add(type);
+                
+            return mightContain;
         }
 
         private void AnalyzeComponentForReferences(Component component, GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges)
@@ -141,6 +175,9 @@ namespace FluffySpectre.UnityEventGraph
 
         private bool AnalyzeComponent(Component component, List<UnityEventNode> nodes, List<EdgeData> edges)
         {
+            if (!TypeMightContainUnityEvents(component.GetType()))
+                return false;
+                
             bool hasUnityEvent = false;
 
             AnalyzeComponentFields(component, (comp, fieldName, unityEvent) =>
@@ -161,17 +198,35 @@ namespace FluffySpectre.UnityEventGraph
 
             foreach (var field in fields)
             {
-                var fieldValue = field.GetValue(component);
-                if (fieldValue != null)
+                // Skip fields that can't possibly contain UnityEvents
+                if (field.FieldType.IsPrimitive || field.FieldType == typeof(string) || 
+                    (!typeof(UnityEventBase).IsAssignableFrom(field.FieldType) && 
+                     !typeof(IEnumerable).IsAssignableFrom(field.FieldType) && 
+                     (!field.FieldType.IsClass || field.FieldType.IsValueType)))
                 {
-                    AnalyzeFieldValueRecursive(component, fieldValue, field.Name, unityEventAction, new HashSet<object>());
+                    continue;
+                }
+                
+                try
+                {
+                    var fieldValue = field.GetValue(component);
+                    if (fieldValue != null)
+                    {
+                        AnalyzeFieldValueRecursive(component, fieldValue, field.Name, unityEventAction, new HashSet<object>(), 0);
+                    }
+                }
+                catch (Exception)
+                {
+                    // Ignore field access exceptions
                 }
             }
         }
 
-        private void AnalyzeFieldValueRecursive(Component component, object fieldValue, string fieldName, Action<Component, string, UnityEventBase> unityEventAction, HashSet<object> visited)
+        private void AnalyzeFieldValueRecursive(Component component, object fieldValue, string fieldName, 
+                                               Action<Component, string, UnityEventBase> unityEventAction, 
+                                               HashSet<object> visited, int currentDepth)
         {
-            if (fieldValue == null || visited.Contains(fieldValue))
+            if (currentDepth >= MAX_RECURSION_DEPTH || fieldValue == null || visited.Contains(fieldValue))
             {
                 return;
             }
@@ -198,24 +253,57 @@ namespace FluffySpectre.UnityEventGraph
                     {
                         foreach (var item in enumerable)
                         {
-                            if (item == null) continue;
-                            AnalyzeFieldValueRecursive(component, item, $"{fieldName}[{index}]", unityEventAction, visited);
+                            if (item == null || index >= MAX_COLLECTION_ITEMS) continue;
+                            AnalyzeFieldValueRecursive(component, item, $"{fieldName}[{index}]", unityEventAction, visited, currentDepth + 1);
                             index++;
                         }
                     }
                     catch (Exception)
                     {
-                        // Ignore
+                        // Ignore collection enumeration exceptions
                     }
                 }
             }
             else if (fieldType.IsClass && fieldType != typeof(string) && !fieldType.IsPrimitive)
             {
-                var nestedFields = fieldType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                foreach (var nestedField in nestedFields)
+                // Only process types that might contain UnityEvents
+                if (!_knownNonUnityEventTypes.Contains(fieldType))
                 {
-                    var nestedFieldValue = nestedField.GetValue(fieldValue);
-                    AnalyzeFieldValueRecursive(component, nestedFieldValue, $"{fieldName}.{nestedField.Name}", unityEventAction, visited);
+                    var nestedFields = fieldType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        .Where(f => !f.FieldType.IsPrimitive && f.FieldType != typeof(string));
+                        
+                    foreach (var nestedField in nestedFields)
+                    {
+                        try
+                        {
+                            var nestedFieldValue = nestedField.GetValue(fieldValue);
+                            AnalyzeFieldValueRecursive(component, nestedFieldValue, $"{fieldName}.{nestedField.Name}", 
+                                                     unityEventAction, visited, currentDepth + 1);
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore field access exceptions
+                        }
+                    }
+                    
+                    // Cache the result if we've fully analyzed the type
+                    if (currentDepth == 0)
+                    {
+                        bool hasUnityEvents = false;
+                        foreach (var f in fieldType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                        {
+                            if (typeof(UnityEventBase).IsAssignableFrom(f.FieldType))
+                            {
+                                hasUnityEvents = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hasUnityEvents)
+                            _knownUnityEventContainerTypes.Add(fieldType);
+                        else
+                            _knownNonUnityEventTypes.Add(fieldType);
+                    }
                 }
             }
         }
@@ -301,7 +389,6 @@ namespace FluffySpectre.UnityEventGraph
 
             if (hasValidTargets)
             {
-                // TODO: Move this into a separate class
                 AddTrackingListener(unityEvent, sourcePortName);
             }
             else
@@ -510,7 +597,7 @@ namespace FluffySpectre.UnityEventGraph
 
                 if (actionType != null)
                 {
-                    trackingDelegate = CreateTrackingDelegate(actionType, unityEvent, eventName);
+                    trackingDelegate = GetOrCreateTrackingDelegate(actionType, unityEvent, eventName);
 
                     addListenerMethod.Invoke(unityEvent, new object[] { trackingDelegate });
 
@@ -521,6 +608,26 @@ namespace FluffySpectre.UnityEventGraph
                     Debug.LogWarning("[EventGraph] Event-Tracker: Unsupported number of parameters in UnityEvent.");
                 }
             }
+        }
+
+        private Delegate GetOrCreateTrackingDelegate(Type actionType, UnityEventBase unityEvent, string eventName)
+        {
+            // Use pooled delegate if it exists
+            if (!_delegatePool.TryGetValue(actionType, out var pooledDelegates))
+            {
+                pooledDelegates = new Dictionary<string, Delegate>();
+                _delegatePool[actionType] = pooledDelegates;
+            }
+            
+            if (pooledDelegates.TryGetValue(eventName, out var existingDelegate))
+            {
+                return existingDelegate;
+            }
+            
+            // Create a new delegate if not found in pool
+            var newDelegate = CreateTrackingDelegate(actionType, unityEvent, eventName);
+            pooledDelegates[eventName] = newDelegate;
+            return newDelegate;
         }
 
         private Type GetUnityActionType(Type[] parameterTypes)

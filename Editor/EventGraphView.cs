@@ -12,6 +12,11 @@ namespace FluffySpectre.UnityEventGraph
     {
         private ILayoutStrategy _layoutStrategy = new ForceDirectedLayoutStrategy();
         private Label _statsLabel;
+        private bool _isHighDetailMode = true;
+        
+        // For large graph optimization
+        private int _nodeCount = 0;
+        private const int LARGE_GRAPH_THRESHOLD = 200;
 
         public EventGraphView()
         {
@@ -49,11 +54,52 @@ namespace FluffySpectre.UnityEventGraph
                 style = { unityTextAlign = TextAnchor.MiddleCenter, position = Position.Absolute, bottom = 5, left = 5 }
             };
             Add(_statsLabel);
+            
+            // Register for zoom changes to update detail level
+            this.viewTransformChanged += OnViewTransformChanged;
+        }
+
+        private void OnViewTransformChanged(GraphView graphView)
+        {
+            UpdateDetailLevel();
+        }
+
+        private void UpdateDetailLevel()
+        {
+            // Only apply LOD for large graphs
+            if (_nodeCount < LARGE_GRAPH_THRESHOLD)
+                return;
+                
+            float zoomLevel = viewTransform.scale.x;
+            bool shouldBeHighDetail = zoomLevel > 0.5f;
+            
+            // Only update if detail level changed
+            if (shouldBeHighDetail != _isHighDetailMode)
+            {
+                _isHighDetailMode = shouldBeHighDetail;
+                UpdateNodeDetailLevel();
+            }
+        }
+        
+        private void UpdateNodeDetailLevel()
+        {
+            // For nodes
+            foreach (var node in nodes.OfType<UnityEventNode>())
+            {
+                node.SetDetailLevel(_isHighDetailMode);
+            }
+            
+            // For edges
+            foreach (var edge in edges.OfType<UnityEventEdge>())
+            {
+                edge.SetDetailLevel(_isHighDetailMode);
+            }
         }
 
         public void ClearGraph()
         {
             graphElements.ForEach(RemoveElement);
+            _nodeCount = 0;
             UpdateStats();
         }
 
@@ -73,7 +119,12 @@ namespace FluffySpectre.UnityEventGraph
                 }
             }
 
+            _nodeCount = nodes.Count;
             UpdateStats();
+            
+            // Set appropriate detail level based on graph size
+            _isHighDetailMode = _nodeCount < LARGE_GRAPH_THRESHOLD;
+            UpdateNodeDetailLevel();
         }
 
         public void SetLayoutStrategy(ILayoutStrategy layoutStrategy)
@@ -85,13 +136,49 @@ namespace FluffySpectre.UnityEventGraph
         {
             _layoutStrategy.Layout(this);
         }
+        
+        public void ShowPartialGraph(IEnumerable<UnityEventNode> visibleNodes, bool showConnections = true)
+        {
+            var nodeSet = new HashSet<UnityEventNode>(visibleNodes);
+            
+            foreach (var node in nodes.OfType<UnityEventNode>())
+            {
+                bool visible = nodeSet.Contains(node);
+                node.SetVisibility(visible);
+            }
+            
+            if (showConnections)
+            {
+                foreach (var edge in edges.OfType<UnityEventEdge>())
+                {
+                    bool edgeVisible = edge.output.node is UnityEventNode outputNode &&
+                                    edge.input.node is UnityEventNode inputNode &&
+                                    nodeSet.Contains(outputNode) &&
+                                    nodeSet.Contains(inputNode);
+                    
+                    edge.SetVisibility(edgeVisible);
+                }
+            }
+            
+            UpdateStats();
+        }
 
         private void UpdateStats()
         {
             int nodeCount = nodes.OfType<UnityEventNode>().Count();
             int edgeCount = edges.OfType<UnityEventEdge>().Count();
+            
+            int visibleNodeCount = nodes.OfType<UnityEventNode>().Count(n => n.IsVisible());
+            int visibleEdgeCount = edges.OfType<UnityEventEdge>().Count(e => e.IsVisible());
 
-            _statsLabel.text = $"{nodeCount} Nodes - {edgeCount} Connections";
+            if (visibleNodeCount != nodeCount || visibleEdgeCount != edgeCount)
+            {
+                _statsLabel.text = $"{visibleNodeCount}/{nodeCount} Nodes - {visibleEdgeCount}/{edgeCount} Connections";
+            }
+            else
+            {
+                _statsLabel.text = $"{nodeCount} Nodes - {edgeCount} Connections";
+            }
         }
     }
 }

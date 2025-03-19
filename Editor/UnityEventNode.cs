@@ -20,6 +20,8 @@ namespace FluffySpectre.UnityEventGraph
         private readonly Color _defaultNodeColor = new(0.2f, 0.2f, 0.2f);
 
         private bool _isVisible = true;
+        private bool _isHighDetail = true;
+        private List<VisualElement> _optionalElements = new List<VisualElement>();
 
         public UnityEventNode(string title, GameObject representedObject)
         {
@@ -43,6 +45,56 @@ namespace FluffySpectre.UnityEventGraph
         {
             return _isVisible;
         }
+        
+        public void SetDetailLevel(bool highDetail)
+        {
+            if (_isHighDetail == highDetail)
+                return;
+                
+            _isHighDetail = highDetail;
+            
+            // Toggle visibility of optional UI elements based on detail level
+            foreach (var element in _optionalElements)
+            {
+                element.style.display = highDetail ? DisplayStyle.Flex : DisplayStyle.None;
+            }
+            
+            // In low detail mode, collapse the node
+            expanded = highDetail;
+            
+            // Simplify ports in low detail mode
+            foreach (var port in inputContainer.Children().OfType<UnityEventPort>())
+            {
+                UpdatePortDetailLevel(port);
+            }
+            
+            foreach (var port in outputContainer.Children().OfType<UnityEventPort>())
+            {
+                UpdatePortDetailLevel(port);
+            }
+        }
+        
+        private void UpdatePortDetailLevel(UnityEventPort port)
+        {
+            // In low detail mode, simplify port labels
+            port.portName = _isHighDetail ? port.FullPortName : GetSimplifiedPortName(port.FullPortName);
+            
+            // Toggle visibility of port labels in low detail mode
+            foreach (var label in port.Query<Label>().ToList())
+            {
+                if (label.name == "invocationCountLabel")
+                {
+                    label.style.display = _isHighDetail ? DisplayStyle.Flex : DisplayStyle.None;
+                }
+            }
+        }
+        
+        private string GetSimplifiedPortName(string fullPortName)
+        {
+            // Only show method name in low detail mode
+            var parts = fullPortName.Split('.');
+            return parts.Length > 0 ? parts[parts.Length - 1] : fullPortName;
+        }
 
         public void AddInputPort(string portName, Component component = null)
         {
@@ -55,7 +107,7 @@ namespace FluffySpectre.UnityEventGraph
                 var inputPort = UnityEventInputPort.Create(Orientation.Horizontal, Direction.Input, Port.Capacity.Single, typeof(UnityEngine.Object), component);
                 
                 inputPort.FullPortName = portName;
-                inputPort.portName = GetPortDisplayName(portName);
+                inputPort.portName = _isHighDetail ? GetPortDisplayName(portName) : GetSimplifiedPortName(portName);
                 inputPort.pickingMode = PickingMode.Ignore;
 
                 inputContainer.Add(inputPort);
@@ -78,7 +130,7 @@ namespace FluffySpectre.UnityEventGraph
                 var outputPort = UnityEventPort.Create(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, typeof(UnityEngine.Object));
                 
                 outputPort.FullPortName = portName;
-                outputPort.portName = GetPortDisplayName(portName);
+                outputPort.portName = _isHighDetail ? GetPortDisplayName(portName) : GetSimplifiedPortName(portName);
                 outputPort.pickingMode = PickingMode.Ignore;
                 outputContainer.Add(outputPort);
 
@@ -150,12 +202,16 @@ namespace FluffySpectre.UnityEventGraph
                 {
                     label = new Label
                     {
-                        style = { color = Color.yellow }
+                        style = { color = Color.yellow },
+                        name = "invocationCountLabel"
                     };
-                    label.name = "invocationCountLabel";
                     port.contentContainer.Add(label);
+                    _optionalElements.Add(label);
                 }
                 label.text = $"Calls: {eventData.InvocationCount}";
+                
+                // Set display based on current detail level
+                label.style.display = _isHighDetail ? DisplayStyle.Flex : DisplayStyle.None;
             }
             else
             {
@@ -164,6 +220,7 @@ namespace FluffySpectre.UnityEventGraph
                 if (label != null)
                 {
                     port.contentContainer.Remove(label);
+                    _optionalElements.Remove(label);
                 }
             }
         }
@@ -172,7 +229,7 @@ namespace FluffySpectre.UnityEventGraph
         {
             // Update parameter labels of connected UnityEventEdges
             var eventData = EventTracker.GetEventData(unityEvent);
-            if (eventData != null)
+            if (eventData != null && eventData.Invocations.Count > 0)
             {
                 foreach (var edge in port.connections.OfType<UnityEventEdge>())
                 {
