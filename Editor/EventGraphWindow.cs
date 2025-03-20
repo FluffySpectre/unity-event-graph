@@ -319,20 +319,12 @@ namespace FluffySpectre.UnityEventGraph
         {
             if (_isAnalyzing)
                 return;
-                
+                        
             _isAnalyzing = true;
             
-            // For very large scenes, show progress bar and use background analysis
-            if (selectedGameObjects == null || selectedGameObjects.Length == 0 || 
-                CountAllChildrenRecursively(selectedGameObjects) > LARGE_GRAPH_THRESHOLD)
-            {
-                AnalyzeSceneProgressively(selectedGameObjects);
-            }
-            else
-            {
-                // Regular analysis for smaller graphs
-                AnalyzeSceneImmediate(selectedGameObjects);
-            }
+            _graphView.ClearGraph();
+            
+            AnalyzeSceneProgressively(selectedGameObjects);
         }
         
         private int CountAllChildrenRecursively(GameObject[] roots)
@@ -370,33 +362,6 @@ namespace FluffySpectre.UnityEventGraph
                     _isAnalyzing = false;
                 }
             };
-        }
-        
-        private void AnalyzeSceneImmediate(GameObject[] selectedGameObjects)
-        {
-            _graphView.ClearGraph();
-
-            _graphData = _analyzer.AnalyzeScene(selectedGameObjects, _isReferenceSearchEnabled);
-            _lastAnalyzedGameObjects = selectedGameObjects;
-
-            _graphView.PopulateGraph(_graphData.Nodes, _graphData.Edges);
-
-            // Restore node positions
-            if (_nodeGraphData != null)
-            {
-                foreach (var node in _graphData.Nodes)
-                {
-                    var representedObjectFullPath = GetGameObjectFullPath(node.RepresentedObject);
-                    var position = _nodeGraphData.GetNodePosition(representedObjectFullPath);
-                    if (position.HasValue)
-                    {
-                        node.SetPosition(new Rect(position.Value, node.GetPosition().size));
-                    }
-                }   
-            }
-
-            UpdateGraphViewFilters();
-            _isAnalyzing = false;
         }
         
         private IEnumerator PopulateGraphProgressively(List<UnityEventNode> nodes, List<EdgeData> edges)
@@ -476,11 +441,15 @@ namespace FluffySpectre.UnityEventGraph
                     edge.ForceUpdateParameterPosition();
                 }
                 
+                // Force update the stats display to show accurate counts
+                _graphView.UpdateStats();
+                
                 UpdateGraphViewFilters();
             }
             finally
             {
                 EditorUtility.ClearProgressBar();
+                _isAnalyzing = false;  // Make sure to reset the analyzing flag
             }
         }
 

@@ -15,7 +15,6 @@ namespace FluffySpectre.UnityEventGraph
         private bool _isHighDetailMode = true;
         
         // For large graph optimization
-        private int _nodeCount = 0;
         private const int LARGE_GRAPH_THRESHOLD = 200;
 
         public EventGraphView()
@@ -66,8 +65,11 @@ namespace FluffySpectre.UnityEventGraph
 
         private void UpdateDetailLevel()
         {
+            // Get current node count
+            int nodeCount = nodes.OfType<UnityEventNode>().Count();
+            
             // Only apply LOD for large graphs
-            if (_nodeCount < LARGE_GRAPH_THRESHOLD)
+            if (nodeCount < LARGE_GRAPH_THRESHOLD)
                 return;
                 
             float zoomLevel = viewTransform.scale.x;
@@ -99,7 +101,6 @@ namespace FluffySpectre.UnityEventGraph
         public void ClearGraph()
         {
             graphElements.ForEach(RemoveElement);
-            _nodeCount = 0;
             UpdateStats();
         }
 
@@ -119,12 +120,32 @@ namespace FluffySpectre.UnityEventGraph
                 }
             }
 
-            _nodeCount = nodes.Count;
+            // Update stats after populating
             UpdateStats();
             
             // Set appropriate detail level based on graph size
-            _isHighDetailMode = _nodeCount < LARGE_GRAPH_THRESHOLD;
+            _isHighDetailMode = nodes.Count < LARGE_GRAPH_THRESHOLD;
             UpdateNodeDetailLevel();
+        }
+
+        public void UpdateStats()
+        {
+            // Always count directly from the graph view
+            int nodeCount = nodes.OfType<UnityEventNode>().Count();
+            int edgeCount = edges.OfType<UnityEventEdge>().Count();
+            
+            // Count visible elements
+            int visibleNodeCount = nodes.OfType<UnityEventNode>().Count(n => n.IsVisible());
+            int visibleEdgeCount = edges.OfType<UnityEventEdge>().Count(e => e.IsVisible());
+
+            if (visibleNodeCount != nodeCount || visibleEdgeCount != edgeCount)
+            {
+                _statsLabel.text = $"{visibleNodeCount}/{nodeCount} Nodes - {visibleEdgeCount}/{edgeCount} Connections";
+            }
+            else
+            {
+                _statsLabel.text = $"{nodeCount} Nodes - {edgeCount} Connections";
+            }
         }
 
         public void SetLayoutStrategy(ILayoutStrategy layoutStrategy)
@@ -161,24 +182,6 @@ namespace FluffySpectre.UnityEventGraph
             }
             
             UpdateStats();
-        }
-
-        private void UpdateStats()
-        {
-            int nodeCount = nodes.OfType<UnityEventNode>().Count();
-            int edgeCount = edges.OfType<UnityEventEdge>().Count();
-            
-            int visibleNodeCount = nodes.OfType<UnityEventNode>().Count(n => n.IsVisible());
-            int visibleEdgeCount = edges.OfType<UnityEventEdge>().Count(e => e.IsVisible());
-
-            if (visibleNodeCount != nodeCount || visibleEdgeCount != edgeCount)
-            {
-                _statsLabel.text = $"{visibleNodeCount}/{nodeCount} Nodes - {visibleEdgeCount}/{edgeCount} Connections";
-            }
-            else
-            {
-                _statsLabel.text = $"{nodeCount} Nodes - {edgeCount} Connections";
-            }
         }
     }
 }
