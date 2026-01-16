@@ -12,14 +12,17 @@ namespace FluffySpectre.UnityEventGraph
     {
         public GameObject RepresentedObject { get; }
 
-        private Dictionary<string, UnityEventBase> _outputPorts = new();
-        private Dictionary<UnityEventBase, UnityEventPort> _unityEventToPort = new();
+        private readonly Dictionary<string, UnityEventBase> _outputPorts = new();
+        private readonly Dictionary<UnityEventBase, UnityEventPort> _unityEventToPort = new();
+        private readonly HashSet<string> _inputPortNames = new();
+        private readonly HashSet<string> _outputPortNames = new();
 
-        private readonly Color _startNodeColor = new(193f / 255f, 83f / 255f, 32f / 255f);
-        private readonly Color _endNodeColor = new(56f / 255f, 111f / 255f, 164f / 255f);
-        private readonly Color _defaultNodeColor = new(0.2f, 0.2f, 0.2f);
+        private static readonly Color StartNodeColor = new(193f / 255f, 83f / 255f, 32f / 255f);
+        private static readonly Color EndNodeColor = new(56f / 255f, 111f / 255f, 164f / 255f);
+        private static readonly Color DefaultNodeColor = new(0.2f, 0.2f, 0.2f);
 
         private bool _isVisible = true;
+        private Color _currentColor;
 
         public UnityEventNode(string title, GameObject representedObject)
         {
@@ -29,80 +32,80 @@ namespace FluffySpectre.UnityEventGraph
             capabilities &= ~Capabilities.Deletable;
             capabilities |= Capabilities.Selectable;
 
+            _currentColor = DefaultNodeColor;
+            
             RefreshExpandedState();
             RefreshPorts();
         }
 
         public void SetVisibility(bool visible)
         {
+            if (_isVisible == visible) return;
+            
             _isVisible = visible;
             style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
-        public bool IsVisible()
-        {
-            return _isVisible;
-        }
+        public bool IsVisible() => _isVisible;
 
         public void AddInputPort(string portName, Component component = null)
         {
-            bool portExists = inputContainer.Children()
-                .OfType<UnityEventPort>()
-                .Any(port => port.FullPortName == portName);
+            if (_inputPortNames.Contains(portName))
+                return;
 
-            if (!portExists)
-            {
-                var inputPort = UnityEventInputPort.Create(Orientation.Horizontal, Direction.Input, Port.Capacity.Single, typeof(UnityEngine.Object), component);
-                
-                inputPort.FullPortName = portName;
-                inputPort.portName = GetPortDisplayName(portName);
-                inputPort.pickingMode = PickingMode.Ignore;
+            _inputPortNames.Add(portName);
 
-                inputContainer.Add(inputPort);
+            var inputPort = UnityEventInputPort.Create(
+                Orientation.Horizontal, 
+                Direction.Input, 
+                Port.Capacity.Single, 
+                typeof(UnityEngine.Object), 
+                component
+            );
 
-                UpdateNodeColor();
+            inputPort.FullPortName = portName;
+            inputPort.portName = GetPortDisplayName(portName);
+            inputPort.pickingMode = PickingMode.Ignore;
 
-                RefreshExpandedState();
-                RefreshPorts();
-            }
+            inputContainer.Add(inputPort);
+
+            UpdateNodeColor();
+            RefreshExpandedState();
+            RefreshPorts();
         }
 
         public void AddOutputPort(string portName, UnityEventBase unityEvent)
         {
-            bool portExists = outputContainer.Children()
-                .OfType<UnityEventPort>()
-                .Any(port => port.FullPortName == portName);
+            if (_outputPortNames.Contains(portName))
+                return;
 
-            if (!portExists)
-            {
-                var outputPort = UnityEventPort.Create(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, typeof(UnityEngine.Object));
-                
-                outputPort.FullPortName = portName;
-                outputPort.portName = GetPortDisplayName(portName);
-                outputPort.pickingMode = PickingMode.Ignore;
-                outputContainer.Add(outputPort);
+            _outputPortNames.Add(portName);
 
-                _outputPorts[portName] = unityEvent;
+            var outputPort = UnityEventPort.Create(
+                Orientation.Horizontal, 
+                Direction.Output, 
+                Port.Capacity.Multi, 
+                typeof(UnityEngine.Object)
+            );
 
-                UpdatePortLabel(outputPort, unityEvent);
-                UpdateNodeColor();
+            outputPort.FullPortName = portName;
+            outputPort.portName = GetPortDisplayName(portName);
+            outputPort.pickingMode = PickingMode.Ignore;
+            outputContainer.Add(outputPort);
 
-                RefreshExpandedState();
-                RefreshPorts();
+            _outputPorts[portName] = unityEvent;
+            _unityEventToPort[unityEvent] = outputPort;
 
-                _unityEventToPort[unityEvent] = outputPort;
-            }
+            UpdatePortLabel(outputPort, unityEvent);
+            UpdateNodeColor();
+
+            RefreshExpandedState();
+            RefreshPorts();
         }
 
-        public bool HasPorts()
-        {
-            return inputContainer.childCount > 0 || outputContainer.childCount > 0;
-        }
+        public bool HasPorts() => _inputPortNames.Count > 0 || _outputPortNames.Count > 0;
 
-        public IEnumerable<UnityEventBase> GetUnityEvents()
-        {
-            return _outputPorts.Values;
-        }
+        public IEnumerable<UnityEventBase> GetUnityEvents() => _outputPorts.Values;
 
         public void UpdateInvocationData()
         {
@@ -132,7 +135,7 @@ namespace FluffySpectre.UnityEventGraph
 
         public void ResetHighlight()
         {
-            UpdateNodeColor();
+            titleContainer.style.backgroundColor = new StyleColor(_currentColor);
         }
 
         public bool TryGetPortForUnityEvent(UnityEventBase unityEvent, out UnityEventPort port)
@@ -143,84 +146,77 @@ namespace FluffySpectre.UnityEventGraph
         private void UpdatePortLabel(Port port, UnityEventBase unityEvent)
         {
             var eventData = EventTracker.GetEventData(unityEvent);
+            var label = port.contentContainer.Q<Label>("invocationCountLabel");
+            
             if (eventData != null)
             {
-                var label = port.contentContainer.Q<Label>("invocationCountLabel");
                 if (label == null)
                 {
                     label = new Label
                     {
+                        name = "invocationCountLabel",
                         style = { color = Color.yellow }
                     };
-                    label.name = "invocationCountLabel";
                     port.contentContainer.Add(label);
                 }
                 label.text = $"Calls: {eventData.InvocationCount}";
             }
-            else
+            else if (label != null)
             {
-                // Remove label if there is no data
-                var label = port.contentContainer.Q<Label>("invocationCountLabel");
-                if (label != null)
-                {
-                    port.contentContainer.Remove(label);
-                }
+                port.contentContainer.Remove(label);
             }
         }
 
         private void UpdateEdgeLabels(Port port, UnityEventBase unityEvent)
         {
-            // Update parameter labels of connected UnityEventEdges
             var eventData = EventTracker.GetEventData(unityEvent);
-            if (eventData != null)
-            {
-                foreach (var edge in port.connections.OfType<UnityEventEdge>())
-                {
-                    var parameterValues = eventData.Invocations.Last().parameterValues;
+            if (eventData == null || eventData.Invocations.Count == 0)
+                return;
 
-                    if (parameterValues != null && parameterValues.Length > 0)
-                    {
-                        edge.SetParameterValue(string.Join("\n", parameterValues));
-                    }
-                    else
-                    {
-                        edge.SetParameterValue(null);
-                    }
+            var invocations = eventData.Invocations;
+            var lastInvocation = invocations[invocations.Count - 1];
+            var parameterValues = lastInvocation.parameterValues;
+
+            foreach (var edge in port.connections.OfType<UnityEventEdge>())
+            {
+                if (parameterValues != null && parameterValues.Length > 0)
+                {
+                    edge.SetParameterValue(string.Join("\n", parameterValues));
+                }
+                else
+                {
+                    edge.SetParameterValue(null);
                 }
             }
         }
 
         private string GetPortDisplayName(string portName)
         {
-            // Strip the name of the GameObject from the port name
-            if (portName.Count(c => c == '.') >= 2)
+            int firstDot = portName.IndexOf('.');
+            if (firstDot >= 0)
             {
-                return portName.Substring(portName.IndexOf('.') + 1);
+                int secondDot = portName.IndexOf('.', firstDot + 1);
+                if (secondDot >= 0)
+                {
+                    return portName.Substring(firstDot + 1);
+                }
             }
-
             return portName;
         }
 
         private void UpdateNodeColor()
         {
-            titleContainer.style.backgroundColor = new StyleColor(GetNodeColor());
+            _currentColor = GetNodeColor();
+            titleContainer.style.backgroundColor = new StyleColor(_currentColor);
         }
 
         private Color GetNodeColor()
         {
-            // Start node
-            if (inputContainer.childCount == 0)
-            {
-                return _startNodeColor;
-            }
-
-            // End node
-            if (outputContainer.childCount == 0)
-            {
-                return _endNodeColor;
-            }
-
-            return _defaultNodeColor;
+            if (_inputPortNames.Count == 0)
+                return StartNodeColor;
+            if (_outputPortNames.Count == 0)
+                return EndNodeColor;
+            return DefaultNodeColor;
         }
     }
 }

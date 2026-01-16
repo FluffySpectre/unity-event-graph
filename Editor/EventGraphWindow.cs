@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using UnityEditor.SceneManagement;
 using UnityEngine.SceneManagement;
+using UnityEngine.Events;
 
 using FluffySpectre.UnityEventGraph.LayoutStrategies;
 using FluffySpectre.UnityEventGraph.Utilities;
@@ -31,6 +32,12 @@ namespace FluffySpectre.UnityEventGraph
         private GameObject[] _lastAnalyzedGameObjects;
         private bool _isReferenceSearchEnabled = false;
         private bool _initialized = false;
+        private double _lastUpdateTime = 0;
+        private const double UpdateInterval = 0.1; // 100ms between updates
+        private bool _pendingHighlightReset = false;
+        private bool _pendingFilterUpdate = false;
+        private Queue<EventData> _pendingEvents = new();
+        private const int MaxEventsPerFrame = 10;
 
         [MenuItem("Window/Event Graph")]
         public static void OpenWindow()
@@ -119,7 +126,6 @@ namespace FluffySpectre.UnityEventGraph
 
         private void OnSceneOpened(Scene scene, OpenSceneMode mode)
         {
-            // Reset session state
             SessionState.SetString("EventGraph_NodePositions", null);
             SessionState.SetString("EventGraph_LastAnalyzedGameObject", null);
 
@@ -129,6 +135,7 @@ namespace FluffySpectre.UnityEventGraph
             ResetEventLog();
             _graphView.ClearGraph();
             _graphData = null;
+            _pendingEvents.Clear();
 
             LoadNodeGraphData();
 
@@ -168,7 +175,6 @@ namespace FluffySpectre.UnityEventGraph
             }
 
             SessionState.SetBool("EventGraph_IsReferenceSearchEnabled", _isReferenceSearchEnabled);
-
             SessionState.SetBool("EventGraph_IsPanelVisible", _isPanelVisible);
             SessionState.SetBool("EventGraph_IsRecording", _isRecording);
 
@@ -178,8 +184,9 @@ namespace FluffySpectre.UnityEventGraph
                 SessionState.SetVector3("EventGraph_ViewScale", _graphView.viewTransform.scale);
 
                 var nodePositions = new SerializableDictionary<string, Vector2>();
+                var nodesList = _graphView.nodes.ToList();
 
-                foreach (var node in _graphView.nodes.ToList())
+                foreach (var node in nodesList)
                 {
                     if (node is UnityEventNode unityNode)
                     {
@@ -193,7 +200,6 @@ namespace FluffySpectre.UnityEventGraph
                 SessionState.SetString("EventGraph_NodePositions", serializedPositions);
             }
 
-            // Save filter settings
             SessionState.SetBool("EventGraph_InvokedNodesFilter", _filterManager.HasNodeFilter(GraphFilters.InvokedNodesFilter));
         }
 
@@ -204,7 +210,10 @@ namespace FluffySpectre.UnityEventGraph
             if (!string.IsNullOrEmpty(lastAnalyzedGameObjectPaths))
             {
                 string[] gameObjectPaths = lastAnalyzedGameObjectPaths.Split(';');
-                _lastAnalyzedGameObjects = gameObjectPaths.Select(path => GameObject.Find(path)).ToArray();
+                _lastAnalyzedGameObjects = gameObjectPaths
+                    .Select(path => GameObject.Find(path))
+                    .Where(go => go != null)
+                    .ToArray();
             }
 
             _isReferenceSearchEnabled = SessionState.GetBool("EventGraph_IsReferenceSearchEnabled", false);
@@ -224,15 +233,15 @@ namespace FluffySpectre.UnityEventGraph
                 _graphView.viewTransform.scale = viewScale;
             }
 
-            // AnalyzeScene(_lastAnalyzedGameObjects);
-
             if (_graphView != null)
             {
                 string serializedPositions = SessionState.GetString("EventGraph_NodePositions", null);
                 if (!string.IsNullOrEmpty(serializedPositions))
                 {
                     var nodePositions = JsonUtility.FromJson<SerializableDictionary<string, Vector2>>(serializedPositions);
-                    foreach (var node in _graphView.nodes.ToList())
+                    var nodesList = _graphView.nodes.ToList();
+                    
+                    foreach (var node in nodesList)
                     {
                         if (node is UnityEventNode unityNode)
                         {
@@ -264,7 +273,6 @@ namespace FluffySpectre.UnityEventGraph
                 _nodeGraphData = ScriptableObject.CreateInstance<NodeGraphData>();
                 _nodeGraphData.sceneName = sceneName;
 
-                // Ensure the directory exists
                 string directoryPath = System.IO.Path.GetDirectoryName(assetPath);
                 if (!System.IO.Directory.Exists(directoryPath))
                 {
@@ -278,7 +286,9 @@ namespace FluffySpectre.UnityEventGraph
 
         private void SaveNodePositions()
         {
-            foreach (var node in _graphView.nodes.ToList())
+            var nodesList = _graphView.nodes.ToList();
+            
+            foreach (var node in nodesList)
             {
                 if (node is UnityEventNode unityNode)
                 {
@@ -294,14 +304,22 @@ namespace FluffySpectre.UnityEventGraph
 
         private string GetGameObjectFullPath(GameObject gameObject)
         {
-            string path = gameObject.name;
-            var parent = gameObject.transform.parent;
-            while (parent != null)
+            if (gameObject == null) 
             {
-                path = $"{parent.gameObject.name}/{path}";
-                parent = parent.parent;
+                return string.Empty;
             }
-            return path;
+
+            var pathParts = new List<string>();
+            var current = gameObject.transform;
+            
+            while (current != null)
+            {
+                pathParts.Add(current.gameObject.name);
+                current = current.parent;
+            }
+            
+            pathParts.Reverse();
+            return string.Join("/", pathParts);
         }
 
         private void AnalyzeFromSelectedGameObjects()
@@ -319,7 +337,6 @@ namespace FluffySpectre.UnityEventGraph
 
             _graphView.PopulateGraph(_graphData.Nodes, _graphData.Edges);
 
-            // Restore node positions
             if (_nodeGraphData != null)
             {
                 foreach (var node in _graphData.Nodes)
@@ -333,7 +350,7 @@ namespace FluffySpectre.UnityEventGraph
                 }   
             }
 
-            UpdateGraphViewFilters();
+            _pendingFilterUpdate = true;
         }
 
         private EventData GetEventDataForNode(UnityEventNode node)
@@ -343,7 +360,7 @@ namespace FluffySpectre.UnityEventGraph
                 var eventData = EventTracker.GetEventData(unityEvent);
                 if (eventData != null && eventData.Invocations.Count > 0)
                 {
-                    return eventData.Invocations.Last();
+                    return eventData.Invocations[eventData.Invocations.Count - 1];
                 }
             }
             return null;
@@ -360,7 +377,7 @@ namespace FluffySpectre.UnityEventGraph
                 _filterManager.RemoveNodeFilter(GraphFilters.InvokedNodesFilter);
             }
 
-            UpdateGraphViewFilters();
+            _pendingFilterUpdate = true;
         }
 
         public void UpdateGraphViewFilters()
@@ -411,36 +428,66 @@ namespace FluffySpectre.UnityEventGraph
 
         private void HighlightEventInGraph(EventData eventData, double duration = 1.0)
         {
-            var node = _graphData.GetNodeForUnityEvent(eventData.unityEvent);
-            if (node == null)
+            var visitedNodes = new HashSet<UnityEventNode>();
+            var visitedEvents = new HashSet<UnityEventBase>();
+            var queue = new Queue<EventData>();
+            
+            queue.Enqueue(eventData);
+            
+            while (queue.Count > 0 && visitedNodes.Count < 1000) // Safety limit
             {
-                Debug.LogWarning("[EventGraph] Node for the event not found.");
-                return;
-            }
-
-            if (!node.TryGetPortForUnityEvent(eventData.unityEvent, out var port))
-            {
-                Debug.LogWarning("[EventGraph] Port for the event not found.");
-                return;
-            }
-
-            HighlightNode(node, duration);
-            HighlightPort(port, duration);
-
-            var edges = port.connections;
-            foreach (var edge in edges)
-            {
-                HighlightEdge(edge, duration);
-
-                var targetNode = edge.input.node as UnityEventNode;
-                if (targetNode != null)
+                var currentEvent = queue.Dequeue();
+                
+                if (currentEvent?.unityEvent == null)
                 {
-                    HighlightNode(targetNode, duration);
+                    continue;
+                }
+                    
+                // Skip if we've already processed this event
+                if (!visitedEvents.Add(currentEvent.unityEvent))
+                {
+                    continue;
+                }
 
-                    var connectedEventData = GetEventDataForNode(targetNode);
-                    if (connectedEventData != null)
+                if (_graphData == null) 
+                {
+                    continue;
+                }
+
+                var node = _graphData.GetNodeForUnityEvent(currentEvent.unityEvent);
+                if (node == null)
+                {
+                    continue;
+                }
+
+                // Skip if we've already visited this node
+                if (!visitedNodes.Add(node))
+                {
+                    continue;
+                }
+
+                if (!node.TryGetPortForUnityEvent(currentEvent.unityEvent, out var port))
+                {
+                    continue;
+                }
+
+                HighlightNode(node, duration);
+                HighlightPort(port, duration);
+
+                foreach (var edge in port.connections)
+                {
+                    HighlightEdge(edge, duration);
+
+                    var targetNode = edge.input.node as UnityEventNode;
+                    if (targetNode != null && !visitedNodes.Contains(targetNode))
                     {
-                        HighlightEventInGraph(connectedEventData, duration);
+                        HighlightNode(targetNode, duration);
+
+                        var connectedEventData = GetEventDataForNode(targetNode);
+                        if (connectedEventData != null && !visitedEvents.Contains(connectedEventData.unityEvent))
+                        {
+                            queue.Enqueue(connectedEventData);
+                        }
                     }
                 }
             }
@@ -449,51 +496,99 @@ namespace FluffySpectre.UnityEventGraph
         private void OnEditorUpdate()
         {
             double currentTime = EditorApplication.timeSinceStartup;
-            var nodesToReset = new List<UnityEventNode>();
-            var edgesToReset = new List<Edge>();
-            var portsToReset = new List<UnityEventPort>();
+            
+            // Throttle updates for better performance
+            if (currentTime - _lastUpdateTime < UpdateInterval)
+            {
+                return;
+            }
+            
+            _lastUpdateTime = currentTime;
+
+            // Process pending events in batches
+            ProcessPendingEvents();
+
+            // Process pending filter updates
+            if (_pendingFilterUpdate)
+            {
+                _pendingFilterUpdate = false;
+                UpdateGraphViewFilters();
+            }
+
+            // Process highlight resets
+            ProcessHighlightResets(currentTime);
+        }
+
+        private void ProcessPendingEvents()
+        {
+            int processed = 0;
+            while (_pendingEvents.Count > 0 && processed < MaxEventsPerFrame)
+            {
+                var eventData = _pendingEvents.Dequeue();
+                ProcessEventTracked(eventData);
+                processed++;
+            }
+        }
+
+        private void ProcessHighlightResets(double currentTime)
+        {
+            List<UnityEventNode> nodesToReset = null;
+            List<Edge> edgesToReset = null;
+            List<UnityEventPort> portsToReset = null;
 
             foreach (var kvp in _highlightedNodes)
             {
                 if (currentTime >= kvp.Value)
                 {
+                    nodesToReset ??= new List<UnityEventNode>();
                     nodesToReset.Add(kvp.Key);
                 }
             }
 
-            foreach (var node in nodesToReset)
+            if (nodesToReset != null)
             {
-                node.ResetHighlight();
-                _highlightedNodes.Remove(node);
+                foreach (var node in nodesToReset)
+                {
+                    node.ResetHighlight();
+                    _highlightedNodes.Remove(node);
+                }
             }
 
             foreach (var kvp in _highlightedEdges)
             {
                 if (currentTime >= kvp.Value)
                 {
+                    edgesToReset ??= new List<Edge>();
                     edgesToReset.Add(kvp.Key);
                 }
             }
 
-            foreach (var edge in edgesToReset)
+            if (edgesToReset != null)
             {
-                edge.edgeControl.inputColor = Color.white;
-                edge.edgeControl.outputColor = Color.white;
-                _highlightedEdges.Remove(edge);
+                foreach (var edge in edgesToReset)
+                {
+                    edge.edgeControl.inputColor = Color.white;
+                    edge.edgeControl.outputColor = Color.white;
+                    _highlightedEdges.Remove(edge);
+                }
             }
 
             foreach (var kvp in _highlightedPorts)
             {
                 if (currentTime >= kvp.Value)
                 {
+                    portsToReset ??= new List<UnityEventPort>();
                     portsToReset.Add(kvp.Key);
                 }
             }
 
-            foreach (var port in portsToReset)
+            if (portsToReset != null)
             {
-                port.portColor = Color.white;
-                _highlightedPorts.Remove(port);
+                foreach (var port in portsToReset)
+                {
+                    port.portColor = Color.white;
+                    _highlightedPorts.Remove(port);
+                }
             }
         }
 
@@ -502,7 +597,7 @@ namespace FluffySpectre.UnityEventGraph
             node.Highlight();
             double resetTime = EditorApplication.timeSinceStartup + duration;
 
-            if (!_highlightedNodes.ContainsKey(node) || _highlightedNodes[node] < resetTime)
+            if (!_highlightedNodes.TryGetValue(node, out var existingTime) || existingTime < resetTime)
             {
                 _highlightedNodes[node] = resetTime;
             }
@@ -514,7 +609,7 @@ namespace FluffySpectre.UnityEventGraph
             edge.edgeControl.outputColor = Color.yellow;
             double resetTime = EditorApplication.timeSinceStartup + duration;
 
-            if (!_highlightedEdges.ContainsKey(edge) || _highlightedEdges[edge] < resetTime)
+            if (!_highlightedEdges.TryGetValue(edge, out var existingTime) || existingTime < resetTime)
             {
                 _highlightedEdges[edge] = resetTime;
             }
@@ -525,7 +620,7 @@ namespace FluffySpectre.UnityEventGraph
             port.portColor = Color.yellow;
             double resetTime = EditorApplication.timeSinceStartup + duration;
 
-            if (!_highlightedPorts.ContainsKey(port) || _highlightedPorts[port] < resetTime)
+            if (!_highlightedPorts.TryGetValue(port, out var existingTime) || existingTime < resetTime)
             {
                 _highlightedPorts[port] = resetTime;
             }
@@ -575,6 +670,16 @@ namespace FluffySpectre.UnityEventGraph
 
         private void OnEventTracked(EventData eventData)
         {
+            _pendingEvents.Enqueue(eventData);
+        }
+
+        private void ProcessEventTracked(EventData eventData)
+        {
+            if (_graphData == null) 
+            {
+                return;
+            }
+
             var node = _graphData.GetNodeForUnityEvent(eventData.unityEvent);
             if (node != null)
             {
@@ -585,8 +690,9 @@ namespace FluffySpectre.UnityEventGraph
             {
                 _eventInvocationListPanel.AddEvent(eventData);
             }
+            
             HighlightEventInGraph(eventData);
-            UpdateGraphViewFilters();
+            _pendingFilterUpdate = true;
         }
 
         private void ResetInvocationCalls()
@@ -595,6 +701,7 @@ namespace FluffySpectre.UnityEventGraph
             {
                 return;
             }
+                
             foreach (var node in _graphData.Nodes)
             {
                 node.UpdateInvocationData();
@@ -607,6 +714,7 @@ namespace FluffySpectre.UnityEventGraph
             _eventInvocationListPanel.ClearList();
             ClearHighlights();
             ResetInvocationCalls();
+            _pendingEvents.Clear();
         }
 
         private void OnLayoutStrategyChanged(LayoutStrategyType strategyType)

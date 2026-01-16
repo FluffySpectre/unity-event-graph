@@ -9,35 +9,59 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
     {
         public void Layout(EventGraphView graphView)
         {
-            // Convert nodes to a list
-            var nodes = graphView.nodes.ToList().OfType<UnityEventNode>().ToList();
+            var nodes = graphView.nodes.OfType<UnityEventNode>().ToList();
+            if (nodes.Count == 0) return;
 
-            // Create a dictionary to track connections (adjacency list)
-            var adjacencyList = new Dictionary<UnityEventNode, List<UnityEventNode>>();
-
-            foreach (var node in nodes)
+            // Build node to index mapping
+            var nodeToIndex = new Dictionary<UnityEventNode, int>(nodes.Count);
+            for (int i = 0; i < nodes.Count; i++)
             {
-                // Get all connected nodes (edges)
-                var connectedNodes = GetConnectedNodes(node, graphView);
-                adjacencyList[node] = connectedNodes;
+                nodeToIndex[nodes[i]] = i;
             }
 
-            // Perform clustering based on shared edges
-            var clusters = PerformClustering(adjacencyList);
+            // Use Union-Find for efficient clustering
+            var unionFind = new UnionFind(nodes.Count);
+
+            // Union connected nodes
+            foreach (var edge in graphView.edges)
+            {
+                var sourceNode = edge.output?.node as UnityEventNode;
+                var targetNode = edge.input?.node as UnityEventNode;
+
+                if (sourceNode != null && targetNode != null &&
+                    nodeToIndex.TryGetValue(sourceNode, out int sourceIdx) &&
+                    nodeToIndex.TryGetValue(targetNode, out int targetIdx))
+                {
+                    unionFind.Union(sourceIdx, targetIdx);
+                }
+            }
+
+            // Group nodes by cluster
+            var clusters = new Dictionary<int, List<UnityEventNode>>();
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                int root = unionFind.Find(i);
+                if (!clusters.TryGetValue(root, out var cluster))
+                {
+                    cluster = new List<UnityEventNode>();
+                    clusters[root] = cluster;
+                }
+                cluster.Add(nodes[i]);
+            }
 
             // Layout each cluster
-            float clusterSpacing = 500f; // Space between clusters
-            float nodeSpacing = 200f; // Space between nodes within a cluster
+            float clusterSpacing = 500f;
+            float nodeSpacing = 200f;
             Vector2 currentClusterPosition = Vector2.zero;
 
-            foreach (var cluster in clusters)
+            foreach (var cluster in clusters.Values)
             {
-                var clusterNodes = cluster.ToList();
-                int nodesPerRow = Mathf.CeilToInt(Mathf.Sqrt(clusterNodes.Count));
+                int clusterSize = cluster.Count;
+                int nodesPerRow = Mathf.CeilToInt(Mathf.Sqrt(clusterSize));
 
-                for (int i = 0; i < clusterNodes.Count; i++)
+                for (int i = 0; i < clusterSize; i++)
                 {
-                    var node = clusterNodes[i];
+                    var node = cluster[i];
                     int row = i / nodesPerRow;
                     int column = i % nodesPerRow;
 
@@ -51,59 +75,54 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
                 currentClusterPosition.x += clusterSpacing;
             }
         }
+    }
 
-        // Get connected nodes (edges)
-        private List<UnityEventNode> GetConnectedNodes(UnityEventNode node, EventGraphView graphView)
+    internal class UnionFind
+    {
+        private readonly int[] _parent;
+        private readonly int[] _rank;
+
+        public UnionFind(int size)
         {
-            var connectedNodes = new List<UnityEventNode>();
-
-            // Iterate through all edges in the graph
-            foreach (var edge in graphView.edges)
+            _parent = new int[size];
+            _rank = new int[size];
+            
+            for (int i = 0; i < size; i++)
             {
-                if (edge.input.node == node)
-                {
-                    connectedNodes.Add((UnityEventNode)edge.output.node);
-                }
-                else if (edge.output.node == node)
-                {
-                    connectedNodes.Add((UnityEventNode)edge.input.node);
-                }
+                _parent[i] = i;
+                _rank[i] = 0;
             }
-
-            return connectedNodes;
         }
 
-        // Perform clustering based on shared edges
-        private List<List<UnityEventNode>> PerformClustering(Dictionary<UnityEventNode, List<UnityEventNode>> adjacencyList)
+        public int Find(int x)
         {
-            var visited = new HashSet<UnityEventNode>();
-            var clusters = new List<List<UnityEventNode>>();
-
-            foreach (var node in adjacencyList.Keys)
+            if (_parent[x] != x)
             {
-                if (!visited.Contains(node))
-                {
-                    var cluster = new List<UnityEventNode>();
-                    DepthFirstSearch(node, adjacencyList, visited, cluster);
-                    clusters.Add(cluster);
-                }
+                _parent[x] = Find(_parent[x]); // Path compression
             }
-
-            return clusters;
+            return _parent[x];
         }
 
-        // Depth-First Search to find connected components
-        private void DepthFirstSearch(UnityEventNode node, Dictionary<UnityEventNode, List<UnityEventNode>> adjacencyList, HashSet<UnityEventNode> visited, List<UnityEventNode> cluster)
+        public void Union(int x, int y)
         {
-            visited.Add(node);
-            cluster.Add(node);
+            int rootX = Find(x);
+            int rootY = Find(y);
 
-            foreach (var neighbor in adjacencyList[node])
+            if (rootX == rootY) return;
+
+            // Union by rank
+            if (_rank[rootX] < _rank[rootY])
             {
-                if (!visited.Contains(neighbor))
-                {
-                    DepthFirstSearch(neighbor, adjacencyList, visited, cluster);
-                }
+                _parent[rootX] = rootY;
+            }
+            else if (_rank[rootX] > _rank[rootY])
+            {
+                _parent[rootY] = rootX;
+            }
+            else
+            {
+                _parent[rootY] = rootX;
+                _rank[rootX]++;
             }
         }
     }

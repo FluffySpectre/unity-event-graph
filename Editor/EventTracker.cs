@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 
@@ -10,21 +9,24 @@ namespace FluffySpectre.UnityEventGraph
     {
         public static Action<EventData> OnEventTracked { get; set; }
 
-        private static Dictionary<UnityEventBase, EventInvocationData> _eventData = new();
+        private static readonly Dictionary<UnityEventBase, EventInvocationData> _eventData = new();
+        private static readonly List<EventData> _allInvokedEventsCache = new();
         private static int _globalInvocationOrder = 0;
+        private static bool _cacheValid = false;
 
         public static void TrackEvent(UnityEventBase unityEvent, string eventName, params object[] parameterValues)
         {
-            if (!_eventData.ContainsKey(unityEvent))
+            if (!_eventData.TryGetValue(unityEvent, out var data))
             {
-                _eventData[unityEvent] = new EventInvocationData();
+                data = new EventInvocationData();
+                _eventData[unityEvent] = data;
             }
 
-            var data = _eventData[unityEvent];
             data.InvocationCount++;
             data.LastInvocationTime = Time.time;
 
             _globalInvocationOrder++;
+            _cacheValid = false;
 
             var eventDataObj = new EventData
             {
@@ -40,25 +42,36 @@ namespace FluffySpectre.UnityEventGraph
 
         public static EventInvocationData GetEventData(UnityEventBase unityEvent)
         {
-            if (_eventData.TryGetValue(unityEvent, out var data))
-            {
-                return data;
-            }
-            return null;
+            _eventData.TryGetValue(unityEvent, out var data);
+            return data;
         }
 
         public static List<EventData> GetAllInvokedEvents()
         {
-            return _eventData.Values
-                .SelectMany(d => d.Invocations)
-                .OrderBy(d => d.invocationOrder)
-                .ToList();
+            if (_cacheValid)
+            {
+                return _allInvokedEventsCache;
+            }
+
+            _allInvokedEventsCache.Clear();
+            
+            foreach (var data in _eventData.Values)
+            {
+                _allInvokedEventsCache.AddRange(data.Invocations);
+            }
+            
+            _allInvokedEventsCache.Sort((a, b) => a.invocationOrder.CompareTo(b.invocationOrder));
+            _cacheValid = true;
+            
+            return _allInvokedEventsCache;
         }
 
         public static void ClearInvokedEvents()
         {
             _eventData.Clear();
+            _allInvokedEventsCache.Clear();
             _globalInvocationOrder = 0;
+            _cacheValid = false;
         }
     }
 
@@ -66,7 +79,7 @@ namespace FluffySpectre.UnityEventGraph
     {
         public int InvocationCount { get; set; }
         public float LastInvocationTime { get; set; }
-        public List<EventData> Invocations { get; set; } = new List<EventData>();
+        public List<EventData> Invocations { get; } = new List<EventData>();
     }
 
     [Serializable]

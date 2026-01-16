@@ -41,7 +41,6 @@ namespace FluffySpectre.UnityEventGraph
             Edges = edges;
             UnityEventNodeMapping = new Dictionary<UnityEventBase, UnityEventNode>();
 
-            // Initialize mapping based on nodes and their UnityEvents
             foreach (var node in Nodes)
             {
                 foreach (var unityEvent in node.GetUnityEvents())
@@ -63,6 +62,52 @@ namespace FluffySpectre.UnityEventGraph
         public NodeGraphData SavedNodeGraphData { get; set; }
 
         private Dictionary<UnityEventBase, Delegate> _trackingDelegates = new();
+        
+        private static readonly Dictionary<Type, FieldInfo[]> _fieldCache = new();
+        private static readonly Dictionary<Type, MethodInfo[]> _methodCache = new();
+        private static readonly Dictionary<Type, bool> _unityEventTypeCache = new();
+        private static readonly Dictionary<Type, bool> _enumerableTypeCache = new();
+        private static readonly FieldInfo _persistentCallsField;
+        private static readonly Type _persistentCallGroupType;
+        private static FieldInfo _callsField;
+        private static readonly Dictionary<Type, FieldInfo> _targetFieldCache = new();
+        private static readonly Dictionary<Type, FieldInfo> _methodFieldCache = new();
+        private static readonly Dictionary<Type, FieldInfo> _argumentsFieldCache = new();
+        private static readonly Dictionary<Type, ArgumentFieldSet> _argumentFieldSetCache = new();
+        
+        // Types to skip during analysis
+        private static readonly HashSet<Type> _skipTypes = new()
+        {
+            typeof(Transform),
+            typeof(string),
+            typeof(Mesh),
+            typeof(Material),
+            typeof(Shader),
+            typeof(Texture),
+            typeof(Texture2D),
+            typeof(Sprite),
+            typeof(AnimationClip),
+            typeof(AudioClip),
+            typeof(Font),
+        };
+
+        private struct ArgumentFieldSet
+        {
+            public FieldInfo IntField;
+            public FieldInfo FloatField;
+            public FieldInfo StringField;
+            public FieldInfo BoolField;
+            public FieldInfo ObjectField;
+        }
+
+        static EventGraphAnalyzer()
+        {
+            _persistentCallsField = typeof(UnityEventBase).GetField("m_PersistentCalls", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_persistentCallsField != null)
+            {
+                _persistentCallGroupType = _persistentCallsField.FieldType;
+            }
+        }
 
         public EventGraphData AnalyzeScene(GameObject[] selectedGameObjects = null, bool searchDirectReferencesOfSelectedComponents = false)
         {
@@ -70,76 +115,75 @@ namespace FluffySpectre.UnityEventGraph
 
             var nodes = new List<UnityEventNode>();
             var edges = new List<EdgeData>();
+            
+            // Use dictionary for O(1) node lookup instead of List.Find()
+            var nodeMap = new Dictionary<GameObject, UnityEventNode>();
 
             if (selectedGameObjects != null && selectedGameObjects.Length > 0)
             {
-                // Analyze the selected GameObjects
                 foreach (var root in selectedGameObjects)
                 {
-                    if (root == null)
-                    {
-                        continue;
-                    }
-                    AnalyzeGameObject(root, nodes, edges);
+                    if (root == null) continue;
+                    AnalyzeGameObject(root, nodes, edges, nodeMap);
                 }
 
                 if (searchDirectReferencesOfSelectedComponents)
                 {
-                    FindReferencesToSelectedComponents(selectedGameObjects, nodes, edges);
+                    var selectedSet = new HashSet<GameObject>(selectedGameObjects);
+                    FindReferencesToSelectedComponents(selectedSet, nodes, edges, nodeMap);
                 }
             }
             else
             {
-                // Analyze the current scene
                 foreach (var root in UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects())
                 {
-                    AnalyzeGameObject(root, nodes, edges);
+                    AnalyzeGameObject(root, nodes, edges, nodeMap);
                 }
             }
 
             return new EventGraphData(nodes, edges);
         }
 
-        private void FindReferencesToSelectedComponents(GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private void FindReferencesToSelectedComponents(HashSet<GameObject> selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
             var allGameObjects = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
             var visitedGameObjects = new HashSet<GameObject>();
 
             foreach (var root in allGameObjects)
             {
-                FindReferencesInGameObject(root, selectedGameObjects, nodes, edges, visitedGameObjects);
+                FindReferencesInGameObject(root, selectedGameObjects, nodes, edges, nodeMap, visitedGameObjects);
             }
         }
 
-        private void FindReferencesInGameObject(GameObject gameObject, GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges, HashSet<GameObject> visitedGameObjects)
+        private void FindReferencesInGameObject(GameObject gameObject, HashSet<GameObject> selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap, HashSet<GameObject> visitedGameObjects)
         {
-            if (visitedGameObjects.Contains(gameObject))
+            if (!visitedGameObjects.Add(gameObject))
                 return;
 
-            visitedGameObjects.Add(gameObject);
-
-            foreach (var component in gameObject.GetComponents<Component>())
+            var components = gameObject.GetComponents<Component>();
+            foreach (var component in components)
             {
                 if (component == null) continue;
-
-                AnalyzeComponentForReferences(component, selectedGameObjects, nodes, edges);
+                AnalyzeComponentForReferences(component, selectedGameObjects, nodes, edges, nodeMap);
             }
 
-            foreach (Transform child in gameObject.transform)
+            var transform = gameObject.transform;
+            int childCount = transform.childCount;
+            for (int i = 0; i < childCount; i++)
             {
-                FindReferencesInGameObject(child.gameObject, selectedGameObjects, nodes, edges, visitedGameObjects);
+                FindReferencesInGameObject(transform.GetChild(i).gameObject, selectedGameObjects, nodes, edges, nodeMap, visitedGameObjects);
             }
         }
 
-        private void AnalyzeComponentForReferences(Component component, GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private void AnalyzeComponentForReferences(Component component, HashSet<GameObject> selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
             AnalyzeComponentFields(component, (comp, fieldName, unityEvent) =>
             {
-                AnalyzeUnityEventForReferences(comp, fieldName, unityEvent, selectedGameObjects, nodes, edges);
+                AnalyzeUnityEventForReferences(comp, fieldName, unityEvent, selectedGameObjects, nodes, edges, nodeMap);
             });
         }
 
-        private bool AnalyzeComponent(Component component, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private bool AnalyzeComponent(Component component, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
             bool hasUnityEvent = false;
 
@@ -147,8 +191,7 @@ namespace FluffySpectre.UnityEventGraph
             {
                 hasUnityEvent = true;
                 string portName = $"{comp.gameObject.name}.{comp.GetType().Name}.{fieldName}";
-
-                AnalyzeUnityEvent(comp, portName, unityEvent, nodes, edges);
+                AnalyzeUnityEvent(comp, portName, unityEvent, nodes, edges, nodeMap);
             });
 
             return hasUnityEvent;
@@ -157,99 +200,166 @@ namespace FluffySpectre.UnityEventGraph
         private void AnalyzeComponentFields(Component component, Action<Component, string, UnityEventBase> unityEventAction)
         {
             var type = component.GetType();
-            var fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-            foreach (var field in fields)
-            {
-                var fieldValue = field.GetValue(component);
-                if (fieldValue != null)
-                {
-                    AnalyzeFieldValueRecursive(component, fieldValue, field.Name, unityEventAction, new HashSet<object>());
-                }
-            }
-        }
-
-        private void AnalyzeFieldValueRecursive(Component component, object fieldValue, string fieldName, Action<Component, string, UnityEventBase> unityEventAction, HashSet<object> visited)
-        {
-            if (fieldValue == null || visited.Contains(fieldValue))
+            
+            // Skip known types that don't contain UnityEvents
+            if (_skipTypes.Contains(type))
             {
                 return;
             }
-
-            visited.Add(fieldValue);
-
-            var fieldType = fieldValue.GetType();
-
-            if (typeof(UnityEventBase).IsAssignableFrom(fieldType))
+            
+            var fields = GetCachedFields(type);
+            var visited = HashSetPool<object>.Get();
+            
+            try
             {
-                var unityEvent = fieldValue as UnityEventBase;
-                if (unityEvent != null && HasPersistentCalls(unityEvent))
+                foreach (var field in fields)
                 {
-                    unityEventAction(component, fieldName, unityEvent);
+                    var fieldValue = field.GetValue(component);
+                    if (fieldValue != null)
+                    {
+                        AnalyzeFieldValueRecursive(component, fieldValue, field.Name, unityEventAction, visited, 0);
+                    }
                 }
             }
-            else if (typeof(IEnumerable).IsAssignableFrom(fieldType) && fieldType != typeof(string))
+            finally
             {
-                var enumerable = fieldValue as IEnumerable;
-                if (enumerable != null)
+                HashSetPool<object>.Release(visited);
+            }
+        }
+
+        private static FieldInfo[] GetCachedFields(Type type)
+        {
+            if (!_fieldCache.TryGetValue(type, out var fields))
+            {
+                fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                _fieldCache[type] = fields;
+            }
+            return fields;
+        }
+
+        private static bool IsUnityEventType(Type type)
+        {
+            if (!_unityEventTypeCache.TryGetValue(type, out var result))
+            {
+                result = typeof(UnityEventBase).IsAssignableFrom(type);
+                _unityEventTypeCache[type] = result;
+            }
+            return result;
+        }
+
+        private static bool IsEnumerableType(Type type)
+        {
+            if (!_enumerableTypeCache.TryGetValue(type, out var result))
+            {
+                result = typeof(IEnumerable).IsAssignableFrom(type) && type != typeof(string);
+                _enumerableTypeCache[type] = result;
+            }
+            return result;
+        }
+
+        private void AnalyzeFieldValueRecursive(Component component, object fieldValue, string fieldName, Action<Component, string, UnityEventBase> unityEventAction, HashSet<object> visited, int depth)
+        {
+            // Use iterative approach to prevent stack overflow
+            var stack = new Stack<(object value, string name, int depth)>();
+            stack.Push((fieldValue, fieldName, depth));
+            
+            const int MaxDepth = 8;
+            const int MaxIterations = 5000; // Safety limit
+            int iterations = 0;
+            
+            while (stack.Count > 0 && iterations < MaxIterations)
+            {
+                iterations++;
+                var (currentValue, currentName, currentDepth) = stack.Pop();
+                
+                if (currentDepth > MaxDepth || currentValue == null)
                 {
-                    int index = 0;
-                    try
+                    continue;
+                }
+                    
+                // Check if already visited (handles circular references)
+                if (!visited.Add(currentValue))
+                {
+                    continue;
+                }
+
+                var fieldType = currentValue.GetType();
+
+                if (IsUnityEventType(fieldType))
+                {
+                    var unityEvent = currentValue as UnityEventBase;
+                    if (unityEvent != null && HasPersistentCalls(unityEvent))
                     {
-                        foreach (var item in enumerable)
+                        unityEventAction(component, currentName, unityEvent);
+                    }
+                }
+                else if (IsEnumerableType(fieldType))
+                {
+                    var enumerable = currentValue as IEnumerable;
+                    if (enumerable != null)
+                    {
+                        int index = 0;
+                        try
                         {
-                            if (item == null) continue;
-                            AnalyzeFieldValueRecursive(component, item, $"{fieldName}[{index}]", unityEventAction, visited);
-                            index++;
+                            foreach (var item in enumerable)
+                            {
+                                if (item == null) continue;
+                                stack.Push((item, $"{currentName}[{index}]", currentDepth + 1));
+                                index++;
+                                
+                                if (index > 50) break;
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore enumeration errors
                         }
                     }
-                    catch (Exception)
+                }
+                else if (fieldType.IsClass && !fieldType.IsPrimitive && !_skipTypes.Contains(fieldType))
+                {
+                    var nestedFields = GetCachedFields(fieldType);
+                    foreach (var nestedField in nestedFields)
                     {
-                        // Ignore
+                        try
+                        {
+                            var nestedFieldValue = nestedField.GetValue(currentValue);
+                            if (nestedFieldValue != null && !visited.Contains(nestedFieldValue))
+                            {
+                                stack.Push((nestedFieldValue, $"{currentName}.{nestedField.Name}", currentDepth + 1));
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // Ignore field access errors
+                        }
                     }
                 }
             }
-            else if (fieldType.IsClass && fieldType != typeof(string) && !fieldType.IsPrimitive)
-            {
-                var nestedFields = fieldType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                foreach (var nestedField in nestedFields)
-                {
-                    var nestedFieldValue = nestedField.GetValue(fieldValue);
-                    AnalyzeFieldValueRecursive(component, nestedFieldValue, $"{fieldName}.{nestedField.Name}", unityEventAction, visited);
-                }
-            }
         }
 
-        private void AnalyzeUnityEvent(Component component, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private void AnalyzeUnityEvent(Component component, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
-            var sourceNode = FindOrCreateNode(component.gameObject, nodes);
-
-            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, target => true);
+            var sourceNode = FindOrCreateNode(component.gameObject, nodes, nodeMap);
+            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, nodeMap, target => true);
         }
 
-        private void AnalyzeUnityEventForReferences(Component component, string eventName, UnityEventBase unityEvent, GameObject[] selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private void AnalyzeUnityEventForReferences(Component component, string eventName, UnityEventBase unityEvent, HashSet<GameObject> selectedGameObjects, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
-            var sourceNode = FindOrCreateNode(component.gameObject, nodes);
+            var sourceNode = FindOrCreateNode(component.gameObject, nodes, nodeMap);
             string sourcePortName = $"{component.gameObject.name}.{component.GetType().Name}.{eventName}";
 
-            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, target =>
+            AnalyzeUnityEventWithPredicate(component, sourceNode, sourcePortName, unityEvent, nodes, edges, nodeMap, target =>
             {
                 if (target is Component targetComponent)
-                {
                     return selectedGameObjects.Contains(targetComponent.gameObject);
-                }
                 else if (target is GameObject targetGameObject)
-                {
                     return selectedGameObjects.Contains(targetGameObject);
-                }
-                else
-                {
-                    return false;
-                }
+                return false;
             });
         }
 
-        private void AnalyzeUnityEventWithPredicate(Component sourceComponent, UnityEventNode sourceNode, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges, Func<UnityEngine.Object, bool> targetPredicate)
+        private void AnalyzeUnityEventWithPredicate(Component sourceComponent, UnityEventNode sourceNode, string sourcePortName, UnityEventBase unityEvent, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap, Func<UnityEngine.Object, bool> targetPredicate)
         {
             var calls = GetPersistentCalls(unityEvent);
             if (calls == null) return;
@@ -276,22 +386,21 @@ namespace FluffySpectre.UnityEventGraph
 
                 if (target is Component targetComponent)
                 {
-                    targetNode = FindOrCreateNode(targetComponent.gameObject, nodes);
+                    targetNode = FindOrCreateNode(targetComponent.gameObject, nodes, nodeMap);
                     targetPortName = $"{targetComponent.gameObject.name}.{targetComponent.GetType().Name}.{methodName}";
                     targetNode.AddInputPort(targetPortName, targetComponent);
                 }
                 else if (target is GameObject targetGameObject)
                 {
-                    targetNode = FindOrCreateNode(targetGameObject, nodes);
+                    targetNode = FindOrCreateNode(targetGameObject, nodes, nodeMap);
                     targetPortName = $"{targetGameObject.name}.{methodName}";
                     targetNode.AddInputPort(targetPortName);
                 }
 
                 if (targetNode != null)
                 {
-                    // Format the parameters as a string
-                    var parametersString = parameters != null 
-                        ? string.Join("\n", parameters.Select(p => p?.ToString() ?? "null")) 
+                    var parametersString = parameters != null
+                        ? string.Join("\n", parameters.Select(p => p?.ToString() ?? "null"))
                         : null;
 
                     var edgeData = new EdgeData(sourceNode, targetNode, sourcePortName, targetPortName, parametersString);
@@ -301,122 +410,135 @@ namespace FluffySpectre.UnityEventGraph
 
             if (hasValidTargets)
             {
-                // TODO: Move this into a separate class
                 AddTrackingListener(unityEvent, sourcePortName);
             }
-            else
+            else if (!sourceNode.HasPorts())
             {
-                // Remove the node if it has no valid targets
-                if (!sourceNode.HasPorts())
-                {
-                    nodes.Remove(sourceNode);
-                }
+                nodes.Remove(sourceNode);
+                nodeMap.Remove(sourceNode.RepresentedObject);
             }
         }
 
-        private void AnalyzeGameObject(GameObject gameObject, List<UnityEventNode> nodes, List<EdgeData> edges)
+        private void AnalyzeGameObject(GameObject gameObject, List<UnityEventNode> nodes, List<EdgeData> edges, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
             bool hasUnityEvents = false;
 
-            foreach (var component in gameObject.GetComponents<Component>())
+            var components = gameObject.GetComponents<Component>();
+            foreach (var component in components)
             {
                 if (component == null) continue;
-                hasUnityEvents |= AnalyzeComponent(component, nodes, edges);
+                hasUnityEvents |= AnalyzeComponent(component, nodes, edges, nodeMap);
             }
 
-            foreach (Transform child in gameObject.transform)
+            var transform = gameObject.transform;
+            int childCount = transform.childCount;
+            for (int i = 0; i < childCount; i++)
             {
-                AnalyzeGameObject(child.gameObject, nodes, edges);
+                AnalyzeGameObject(transform.GetChild(i).gameObject, nodes, edges, nodeMap);
             }
 
-            // Remove the node if it has no UnityEvents
             if (hasUnityEvents)
             {
-                var node = FindOrCreateNode(gameObject, nodes);
+                var node = FindOrCreateNode(gameObject, nodes, nodeMap);
                 if (!node.HasPorts())
                 {
                     nodes.Remove(node);
+                    nodeMap.Remove(gameObject);
                 }
             }
         }
 
         private bool HasPersistentCalls(UnityEventBase unityEvent)
         {
-            int count = unityEvent.GetPersistentEventCount();
-            return count > 0;
+            return unityEvent.GetPersistentEventCount() > 0;
         }
 
         private IList GetPersistentCalls(UnityEventBase unityEvent)
         {
-            var persistentCallsField = typeof(UnityEventBase).GetField("m_PersistentCalls", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (persistentCallsField == null) return null;
+            if (_persistentCallsField == null) return null;
 
-            var persistentCalls = persistentCallsField.GetValue(unityEvent);
+            var persistentCalls = _persistentCallsField.GetValue(unityEvent);
             if (persistentCalls == null) return null;
 
-            var callsField = persistentCalls.GetType().GetField("m_Calls", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (callsField == null) return null;
-
-            return callsField.GetValue(persistentCalls) as IList;
+            if (_callsField == null)
+            {
+                _callsField = persistentCalls.GetType().GetField("m_Calls", BindingFlags.Instance | BindingFlags.NonPublic);
+            }
+            
+            return _callsField?.GetValue(persistentCalls) as IList;
         }
 
         private UnityEngine.Object GetCallTarget(object call)
         {
-            var targetField = call.GetType().GetField("m_Target", BindingFlags.Instance | BindingFlags.NonPublic);
+            var type = call.GetType();
+            if (!_targetFieldCache.TryGetValue(type, out var targetField))
+            {
+                targetField = type.GetField("m_Target", BindingFlags.Instance | BindingFlags.NonPublic);
+                _targetFieldCache[type] = targetField;
+            }
             return targetField?.GetValue(call) as UnityEngine.Object;
         }
 
         private string GetCallMethodName(object call)
         {
-            var methodField = call.GetType().GetField("m_MethodName", BindingFlags.Instance | BindingFlags.NonPublic);
+            var type = call.GetType();
+            if (!_methodFieldCache.TryGetValue(type, out var methodField))
+            {
+                methodField = type.GetField("m_MethodName", BindingFlags.Instance | BindingFlags.NonPublic);
+                _methodFieldCache[type] = methodField;
+            }
             return methodField?.GetValue(call) as string;
         }
 
         private object[] GetCallParameters(object call, string methodName, UnityEngine.Object target)
         {
             if (string.IsNullOrEmpty(methodName) || target == null)
-            {
                 return null;
+
+            var callType = call.GetType();
+            if (!_argumentsFieldCache.TryGetValue(callType, out var argumentsField))
+            {
+                argumentsField = callType.GetField("m_Arguments", BindingFlags.Instance | BindingFlags.NonPublic);
+                _argumentsFieldCache[callType] = argumentsField;
+            }
+            
+            var arguments = argumentsField?.GetValue(call);
+            if (arguments == null) return null;
+
+            var argType = arguments.GetType();
+            if (!_argumentFieldSetCache.TryGetValue(argType, out var argFields))
+            {
+                argFields = new ArgumentFieldSet
+                {
+                    IntField = argType.GetField("m_IntArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance),
+                    FloatField = argType.GetField("m_FloatArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance),
+                    StringField = argType.GetField("m_StringArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance),
+                    BoolField = argType.GetField("m_BoolArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance),
+                    ObjectField = argType.GetField("m_ObjectArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                };
+                _argumentFieldSetCache[argType] = argFields;
             }
 
+            int intArg = argFields.IntField != null ? (int)argFields.IntField.GetValue(arguments) : default;
+            float floatArg = argFields.FloatField != null ? (float)argFields.FloatField.GetValue(arguments) : default;
+            string stringArg = argFields.StringField != null ? (string)argFields.StringField.GetValue(arguments) : null;
+            bool boolArg = argFields.BoolField != null ? (bool)argFields.BoolField.GetValue(arguments) : default;
+            UnityEngine.Object objectArg = argFields.ObjectField != null ? (UnityEngine.Object)argFields.ObjectField.GetValue(arguments) : null;
+
             var targetType = target.GetType();
-            var argumentsField = call.GetType().GetField("m_Arguments", BindingFlags.Instance | BindingFlags.NonPublic);
-            var arguments = argumentsField?.GetValue(call);
-
-            // Get all possible argument types
-            var intField = arguments?.GetType().GetField("m_IntArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var floatField = arguments?.GetType().GetField("m_FloatArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var stringField = arguments?.GetType().GetField("m_StringArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var boolField = arguments?.GetType().GetField("m_BoolArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var objectField = arguments?.GetType().GetField("m_ObjectArgument", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-            int intArg = intField != null ? (int)intField.GetValue(arguments) : default;
-            float floatArg = floatField != null ? (float)floatField.GetValue(arguments) : default;
-            string stringArg = stringField != null ? (string)stringField.GetValue(arguments) : null;
-            bool boolArg = boolField != null ? (bool)boolField.GetValue(arguments) : default;
-            UnityEngine.Object objectArg = objectField != null ? (UnityEngine.Object)objectField.GetValue(arguments) : null;
-
-            // Find a method that matches the parameters
             var method = FindMatchingMethodWithParameters(targetType, methodName, intArg, floatArg, stringArg, boolArg, objectArg);
 
             if (method == null)
-            {
                 return null;
-            }
 
-            // Get parameters of the method
             var candidateParameters = method.GetParameters();
             if (candidateParameters.Length == 0)
-            {
                 return null;
-            }
 
-            // Assign the arguments to the parameters
             var parameterValues = new object[candidateParameters.Length];
             for (int i = 0; i < candidateParameters.Length; i++)
             {
                 var pType = candidateParameters[i].ParameterType;
-
                 parameterValues[i] = GetArgumentForParameter(pType, intArg, floatArg, stringArg, boolArg, objectArg);
             }
 
@@ -425,74 +547,51 @@ namespace FluffySpectre.UnityEventGraph
 
         private MethodInfo FindMatchingMethodWithParameters(Type targetType, string methodName, int intArg, float floatArg, string stringArg, bool boolArg, UnityEngine.Object objectArg)
         {
-            var methods = targetType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .Where(m => m.Name == methodName)
-                .ToArray();
-
-            if (methods.Length == 0)
+            if (!_methodCache.TryGetValue(targetType, out var allMethods))
             {
-                return null;
+                allMethods = targetType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                _methodCache[targetType] = allMethods;
             }
 
-            if (methods.Length == 1)
+            MethodInfo firstMatch = null;
+            foreach (var method in allMethods)
             {
-                return methods[0];
-            }
-
-            // Find a method that matches the parameters
-            foreach (var candidate in methods)
-            {
-                var candidateParameters = candidate.GetParameters();
-                if (ParametersCouldMatch(candidateParameters, intArg, floatArg, stringArg, boolArg, objectArg))
+                if (method.Name == methodName)
                 {
-                    return candidate;
+                    if (firstMatch == null)
+                        firstMatch = method;
+                    else
+                    {
+                        // Multiple methods found, check parameters
+                        var candidateParameters = method.GetParameters();
+                        if (ParametersCouldMatch(candidateParameters, intArg, floatArg, stringArg, boolArg, objectArg))
+                            return method;
+                    }
                 }
             }
 
-            return null;
+            return firstMatch;
         }
 
         private bool ParametersCouldMatch(ParameterInfo[] candidateParameters, int intArg, float floatArg, string stringArg, bool boolArg, UnityEngine.Object objectArg)
         {
-            // TODO: Maybe add more sophisticated parameter matching
             return true;
         }
 
         private object GetArgumentForParameter(Type pType, int intArg, float floatArg, string stringArg, bool boolArg, UnityEngine.Object objectArg)
         {
-            if (pType == typeof(int))
-            {
-                return intArg; // Default = 0
-            }
-            else if (pType == typeof(float))
-            {
-                return floatArg; // Default = 0f
-            }
-            else if (pType == typeof(string))
-            {
-                return stringArg; // Default = null
-            }
-            else if (pType == typeof(bool))
-            {
-                return boolArg; // Default = false
-            }
-            else if (typeof(UnityEngine.Object).IsAssignableFrom(pType))
-            {
-                return objectArg; // Default = null
-            }
-            else
-            {
-                // Type not supported
-                return null;
-            }
+            if (pType == typeof(int)) return intArg;
+            if (pType == typeof(float)) return floatArg;
+            if (pType == typeof(string)) return stringArg;
+            if (pType == typeof(bool)) return boolArg;
+            if (typeof(UnityEngine.Object).IsAssignableFrom(pType)) return objectArg;
+            return null;
         }
 
         private void AddTrackingListener(UnityEventBase unityEvent, string eventName)
         {
             if (_trackingDelegates.ContainsKey(unityEvent))
-            {
                 return;
-            }
 
             var eventType = unityEvent.GetType();
             var invokeMethod = eventType.GetMethod("Invoke");
@@ -502,44 +601,29 @@ namespace FluffySpectre.UnityEventGraph
 
             if (addListenerMethod != null)
             {
-                Delegate trackingDelegate = null;
-
                 var parameterTypes = parameters.Select(p => p.ParameterType).ToArray();
-
                 var actionType = GetUnityActionType(parameterTypes);
 
                 if (actionType != null)
                 {
-                    trackingDelegate = CreateTrackingDelegate(actionType, unityEvent, eventName);
-
+                    var trackingDelegate = CreateTrackingDelegate(actionType, unityEvent, eventName);
                     addListenerMethod.Invoke(unityEvent, new object[] { trackingDelegate });
-
                     _trackingDelegates[unityEvent] = trackingDelegate;
-                }
-                else
-                {
-                    Debug.LogWarning("[EventGraph] Event-Tracker: Unsupported number of parameters in UnityEvent.");
                 }
             }
         }
 
         private Type GetUnityActionType(Type[] parameterTypes)
         {
-            switch (parameterTypes.Length)
+            return parameterTypes.Length switch
             {
-                case 0:
-                    return typeof(UnityAction);
-                case 1:
-                    return typeof(UnityAction<>).MakeGenericType(parameterTypes);
-                case 2:
-                    return typeof(UnityAction<,>).MakeGenericType(parameterTypes);
-                case 3:
-                    return typeof(UnityAction<,,>).MakeGenericType(parameterTypes);
-                case 4:
-                    return typeof(UnityAction<,,,>).MakeGenericType(parameterTypes);
-                default:
-                    return null;
-            }
+                0 => typeof(UnityAction),
+                1 => typeof(UnityAction<>).MakeGenericType(parameterTypes),
+                2 => typeof(UnityAction<,>).MakeGenericType(parameterTypes),
+                3 => typeof(UnityAction<,,>).MakeGenericType(parameterTypes),
+                4 => typeof(UnityAction<,,,>).MakeGenericType(parameterTypes),
+                _ => null
+            };
         }
 
         private Delegate CreateTrackingDelegate(Type actionType, UnityEventBase unityEvent, string eventName)
@@ -567,7 +651,6 @@ namespace FluffySpectre.UnityEventGraph
             );
 
             var lambdaBody = Expression.Block(trackEventCall);
-
             var lambda = Expression.Lambda(actionType, lambdaBody, parameterExpressions);
             return lambda.Compile();
         }
@@ -580,23 +663,42 @@ namespace FluffySpectre.UnityEventGraph
                 var trackingDelegate = kvp.Value;
 
                 var removeListenerMethod = unityEvent.GetType().GetMethod("RemoveListener");
-                if (removeListenerMethod != null)
-                {
-                    removeListenerMethod.Invoke(unityEvent, new object[] { trackingDelegate });
-                }
+                removeListenerMethod?.Invoke(unityEvent, new object[] { trackingDelegate });
             }
             _trackingDelegates.Clear();
         }
 
-        private UnityEventNode FindOrCreateNode(GameObject gameObject, List<UnityEventNode> nodes)
+        private UnityEventNode FindOrCreateNode(GameObject gameObject, List<UnityEventNode> nodes, Dictionary<GameObject, UnityEventNode> nodeMap)
         {
-            var node = nodes.Find(n => n.RepresentedObject == gameObject);
-            if (node == null)
-            {
-                node = new UnityEventNode(gameObject.name, gameObject);
-                nodes.Add(node);
-            }
+            if (nodeMap.TryGetValue(gameObject, out var existingNode))
+                return existingNode;
+
+            var node = new UnityEventNode(gameObject.name, gameObject);
+            nodes.Add(node);
+            nodeMap[gameObject] = node;
             return node;
+        }
+    }
+
+    internal static class HashSetPool<T>
+    {
+        private static readonly Stack<HashSet<T>> _pool = new();
+
+        public static HashSet<T> Get()
+        {
+            if (_pool.Count > 0)
+            {
+                var set = _pool.Pop();
+                set.Clear();
+                return set;
+            }
+            return new HashSet<T>();
+        }
+
+        public static void Release(HashSet<T> set)
+        {
+            set.Clear();
+            _pool.Push(set);
         }
     }
 }

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 
 namespace FluffySpectre.UnityEventGraph 
 {
-    // Filter
     public interface INodeFilter
     {
         bool IsNodeVisible(UnityEventNode node);
@@ -13,26 +12,39 @@ namespace FluffySpectre.UnityEventGraph
     {
         public bool IsNodeVisible(UnityEventNode node)
         {
-            return node.GetUnityEvents()
-                .Any(e => EventTracker.GetEventData(e)?.InvocationCount > 0);
+            foreach (var e in node.GetUnityEvents())
+            {
+                var data = EventTracker.GetEventData(e);
+                if (data != null && data.InvocationCount > 0)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
     public class GraphFilterManager
     {
         private readonly List<INodeFilter> _activeNodeFilters = new();
+        private readonly HashSet<UnityEventNode> _visibleNodesCache = new();
+        private bool _cacheValid = false;
 
         public void AddNodeFilter(INodeFilter filter)
         {
             if (!_activeNodeFilters.Contains(filter))
             {
                 _activeNodeFilters.Add(filter);
+                InvalidateCache();
             }
         }
 
         public void RemoveNodeFilter(INodeFilter filter)
         {
-            _activeNodeFilters.Remove(filter);
+            if (_activeNodeFilters.Remove(filter))
+            {
+                InvalidateCache();
+            }
         }
 
         public bool HasNodeFilter(INodeFilter filter)
@@ -40,37 +52,75 @@ namespace FluffySpectre.UnityEventGraph
             return _activeNodeFilters.Contains(filter);
         }
 
+        public void InvalidateCache()
+        {
+            _cacheValid = false;
+            _visibleNodesCache.Clear();
+        }
+
         public void ApplyFilters(EventGraphView graphView)
         {
+            if (graphView == null) return;
+
+            _visibleNodesCache.Clear();
+            
+            // If no filters, all nodes are visible
+            bool hasFilters = _activeNodeFilters.Count > 0;
+            
+            // Get nodes once to avoid repeated enumeration
+            var allNodes = graphView.nodes.OfType<UnityEventNode>().ToList();
+            var allEdges = graphView.edges.OfType<UnityEventEdge>().ToList();
+
             // Apply node visibility
-            var visibleNodes = new HashSet<UnityEventNode>();
-            foreach (var node in graphView.nodes.OfType<UnityEventNode>())
+            foreach (var node in allNodes)
             {
-                bool visible = _activeNodeFilters.All(filter => filter.IsNodeVisible(node));
+                bool visible;
+                if (hasFilters)
+                {
+                    visible = true;
+                    foreach (var filter in _activeNodeFilters)
+                    {
+                        if (!filter.IsNodeVisible(node))
+                        {
+                            visible = false;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    visible = true;
+                }
+
                 node.SetVisibility(visible);
 
                 if (visible)
                 {
-                    visibleNodes.Add(node);
+                    _visibleNodesCache.Add(node);
                 }
             }
 
             // Apply edge visibility based on node visibility
-            foreach (var edge in graphView.edges.OfType<UnityEventEdge>())
+            foreach (var edge in allEdges)
             {
-                bool edgeVisible = edge.output.node is UnityEventNode outputNode &&
-                                edge.input.node is UnityEventNode inputNode &&
-                                visibleNodes.Contains(outputNode) &&
-                                visibleNodes.Contains(inputNode);
+                var outputNode = edge.output?.node as UnityEventNode;
+                var inputNode = edge.input?.node as UnityEventNode;
+
+                bool edgeVisible = outputNode != null && 
+                                   inputNode != null &&
+                                   _visibleNodesCache.Contains(outputNode) &&
+                                   _visibleNodesCache.Contains(inputNode);
 
                 edge.SetVisibility(edgeVisible);
             }
+
+            _cacheValid = true;
         }
     }
 
     public static class GraphFilters 
     {
         public static INodeFilter InvokedNodesFilter => _invokedNodesFilter;
-        private static InvokedNodesFilter _invokedNodesFilter = new();
+        private static readonly InvokedNodesFilter _invokedNodesFilter = new();
     }
 }

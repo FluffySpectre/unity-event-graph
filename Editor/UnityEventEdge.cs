@@ -9,6 +9,8 @@ namespace FluffySpectre.UnityEventGraph
     {
         private bool _isVisible = true;
         private Label _parameterLabel;
+        private bool _labelPositionDirty = false;
+        private bool _hasParameter = false;
 
         public static UnityEventEdge CreateEdge(EdgeData edgeData)
         {
@@ -38,6 +40,7 @@ namespace FluffySpectre.UnityEventGraph
             // Add parameter label only if there are parameters
             if (!string.IsNullOrEmpty(edgeData.ParameterValue))
             {
+                edge._hasParameter = true;
                 edge._parameterLabel = new Label(edgeData.ParameterValue)
                 {
                     style =
@@ -59,7 +62,7 @@ namespace FluffySpectre.UnityEventGraph
                 };
 
                 edge.Add(edge._parameterLabel);
-                edge.UpdateParameterLabelPosition();
+                edge._labelPositionDirty = true;
                 edge.RegisterNodePositionChangeListeners();
             }
 
@@ -71,74 +74,104 @@ namespace FluffySpectre.UnityEventGraph
 
         private void RegisterNodePositionChangeListeners()
         {
-            // Add listeners for both source and target nodes
-            if (output.node is Node sourceNode)
+            // Use a flag instead of immediate update
+            if (output?.node is Node sourceNode)
             {
-                sourceNode.RegisterCallback<GeometryChangedEvent>(_ => UpdateParameterLabelPosition());
+                sourceNode.RegisterCallback<GeometryChangedEvent>(_ => _labelPositionDirty = true);
             }
 
-            if (input.node is Node targetNode)
+            if (input?.node is Node targetNode)
             {
-                targetNode.RegisterCallback<GeometryChangedEvent>(_ => UpdateParameterLabelPosition());
+                targetNode.RegisterCallback<GeometryChangedEvent>(_ => _labelPositionDirty = true);
+            }
+
+            // Schedule periodic position update instead of every frame
+            schedule.Execute(UpdateParameterLabelPositionIfNeeded).Every(100);
+        }
+
+        private void UpdateParameterLabelPositionIfNeeded()
+        {
+            if (_labelPositionDirty && _isVisible && _hasParameter)
+            {
+                _labelPositionDirty = false;
+                UpdateParameterLabelPosition();
             }
         }
 
         public void SetParameterValue(string value)
         {
-            if (_parameterLabel != null)
+            if (_parameterLabel == null)
             {
-                if (value != null)
+                if (string.IsNullOrEmpty(value))
+                    return;
+
+                _hasParameter = true;
+                _parameterLabel = new Label(value)
                 {
-                    _parameterLabel.text = value;
-                    _parameterLabel.style.display = DisplayStyle.Flex;
-                }
-                else
-                {
-                    // Hide label if there is no value
-                    _parameterLabel.style.display = DisplayStyle.None;
-                }
+                    style =
+                    {
+                        position = Position.Absolute,
+                        unityTextAlign = TextAnchor.MiddleLeft,
+                        backgroundColor = new Color(0.25f, 0.25f, 0.25f, 0.75f),
+                        color = Color.white,
+                        borderBottomLeftRadius = 5,
+                        borderBottomRightRadius = 5,
+                        borderTopLeftRadius = 5,
+                        borderTopRightRadius = 5,
+                        paddingLeft = 5,
+                        paddingRight = 5,
+                        paddingTop = 5,
+                        paddingBottom = 5,
+                    },
+                    pickingMode = PickingMode.Ignore,
+                };
+                Add(_parameterLabel);
+                RegisterNodePositionChangeListeners();
+                _labelPositionDirty = true;
+            }
+            else if (!string.IsNullOrEmpty(value))
+            {
+                _parameterLabel.text = value;
+                _parameterLabel.style.display = DisplayStyle.Flex;
+                _labelPositionDirty = true;
+            }
+            else
+            {
+                _parameterLabel.style.display = DisplayStyle.None;
             }
         }
 
         private void UpdateParameterLabelPosition()
         {
-            if (_parameterLabel != null && output != null && input != null)
-            {
-                Vector2 sourcePosition = output.worldBound.center;
-                Vector2 targetPosition = input.worldBound.center;
+            if (_parameterLabel == null || output == null || input == null)
+                return;
 
-                var graphView = output.node.GetFirstAncestorOfType<GraphView>();
-                if (graphView == null)
-                {
-                    return;
-                }
+            var graphView = output.node?.GetFirstAncestorOfType<GraphView>();
+            if (graphView == null)
+                return;
 
-                Vector2 localSourcePosition = graphView.contentViewContainer.WorldToLocal(sourcePosition);
-                Vector2 localTargetPosition = graphView.contentViewContainer.WorldToLocal(targetPosition);
+            Vector2 sourcePosition = output.worldBound.center;
+            Vector2 targetPosition = input.worldBound.center;
 
-                // Calculate midpoint of the edge
-                Vector2 midPoint = (localSourcePosition + localTargetPosition) / 2;
+            Vector2 localSourcePosition = graphView.contentViewContainer.WorldToLocal(sourcePosition);
+            Vector2 localTargetPosition = graphView.contentViewContainer.WorldToLocal(targetPosition);
 
-                float labelWidth = _parameterLabel.resolvedStyle.width;
-                float labelHeight = _parameterLabel.resolvedStyle.height;
+            Vector2 midPoint = (localSourcePosition + localTargetPosition) * 0.5f;
 
-                // If the label's width or height is not resolved, use a fallback (e.g., default size)
-                if (labelWidth <= 0)
-                {
-                    labelWidth = 50f;
-                }
-                if (labelHeight <= 0)
-                {
-                    labelHeight = 20f;
-                }
+            float labelWidth = _parameterLabel.resolvedStyle.width;
+            float labelHeight = _parameterLabel.resolvedStyle.height;
 
-                _parameterLabel.style.left = midPoint.x - (labelWidth / 2);
-                _parameterLabel.style.top = midPoint.y - (labelHeight / 2);
-            }
+            if (labelWidth <= 0) labelWidth = 50f;
+            if (labelHeight <= 0) labelHeight = 20f;
+
+            _parameterLabel.style.left = midPoint.x - (labelWidth * 0.5f);
+            _parameterLabel.style.top = midPoint.y - (labelHeight * 0.5f);
         }
 
         public void SetVisibility(bool visible)
         {
+            if (_isVisible == visible) return;
+            
             _isVisible = visible;
             style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
 
@@ -148,9 +181,6 @@ namespace FluffySpectre.UnityEventGraph
             }
         }
 
-        public bool IsVisible()
-        {
-            return _isVisible;
-        }
+        public bool IsVisible() => _isVisible;
     }
 }
