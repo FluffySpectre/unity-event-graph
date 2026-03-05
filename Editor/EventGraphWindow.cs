@@ -122,7 +122,7 @@ namespace FluffySpectre.UnityEventGraph
         {
             // Reset session state
             SessionState.SetString("EventGraph_NodePositions", null);
-            SessionState.SetString("EventGraph_LastAnalyzedGameObject", null);
+            SessionState.SetString("EventGraph_LastAnalyzedGameObjects", null);
 
             _lastAnalyzedGameObjects = null;
             ChangeRecordingStatus(false);
@@ -165,7 +165,7 @@ namespace FluffySpectre.UnityEventGraph
             }
             else
             {
-                SessionState.SetString("EventGraph_LastAnalyzedGameObject", null);
+                SessionState.SetString("EventGraph_LastAnalyzedGameObjects", null);
             }
 
             SessionState.SetBool("EventGraph_IsReferenceSearchEnabled", _isReferenceSearchEnabled);
@@ -205,7 +205,10 @@ namespace FluffySpectre.UnityEventGraph
             if (!string.IsNullOrEmpty(lastAnalyzedGameObjectPaths))
             {
                 string[] gameObjectPaths = lastAnalyzedGameObjectPaths.Split(';');
-                _lastAnalyzedGameObjects = gameObjectPaths.Select(path => GameObject.Find(path)).ToArray();
+                _lastAnalyzedGameObjects = gameObjectPaths
+                    .Select(FindGameObjectByFullPath)
+                    .Where(go => go != null)
+                    .ToArray();
             }
 
             _isReferenceSearchEnabled = SessionState.GetBool("EventGraph_IsReferenceSearchEnabled", false);
@@ -295,19 +298,129 @@ namespace FluffySpectre.UnityEventGraph
 
         private string GetGameObjectFullPath(GameObject gameObject)
         {
-            string path = gameObject.name;
+            string path = GetUniqueName(gameObject.transform);
             var parent = gameObject.transform.parent;
             while (parent != null)
             {
-                path = $"{parent.gameObject.name}/{path}";
+                path = $"{GetUniqueName(parent)}/{path}";
                 parent = parent.parent;
             }
             return path;
         }
 
+        private string GetUniqueName(Transform transform)
+        {
+            if (transform.parent != null)
+            {
+                int sameNameCount = 0;
+                int myIndex = 0;
+                for (int i = 0; i < transform.parent.childCount; i++)
+                {
+                    var sibling = transform.parent.GetChild(i);
+                    if (sibling.name == transform.name)
+                    {
+                        if (sibling == transform) myIndex = sameNameCount;
+                        sameNameCount++;
+                    }
+                }
+                if (sameNameCount > 1)
+                    return $"{transform.name}[{myIndex}]";
+            }
+            else
+            {
+                var roots = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
+                int sameNameCount = 0;
+                int myIndex = 0;
+                foreach (var root in roots)
+                {
+                    if (root.name == transform.name)
+                    {
+                        if (root.transform == transform) myIndex = sameNameCount;
+                        sameNameCount++;
+                    }
+                }
+                if (sameNameCount > 1)
+                    return $"{transform.name}[{myIndex}]";
+            }
+            return transform.name;
+        }
+
+        private GameObject FindGameObjectByFullPath(string fullPath)
+        {
+            var simple = GameObject.Find(fullPath);
+            if (simple != null) return simple;
+
+            var segments = fullPath.Split('/');
+            var rootObjects = SceneManager.GetActiveScene().GetRootGameObjects();
+            Transform current = null;
+
+            for (int s = 0; s < segments.Length; s++)
+            {
+                string segment = segments[s];
+                string name = segment;
+                int index = 0;
+
+                int bracketStart = segment.LastIndexOf('[');
+                if (bracketStart >= 0 && segment.EndsWith("]"))
+                {
+                    name = segment.Substring(0, bracketStart);
+                    int.TryParse(segment.Substring(bracketStart + 1, segment.Length - bracketStart - 2), out index);
+                }
+
+                if (current == null)
+                {
+                    int matchCount = 0;
+                    Transform found = null;
+                    foreach (var root in rootObjects)
+                    {
+                        if (root.name == name)
+                        {
+                            if (matchCount == index) found = root.transform;
+                            matchCount++;
+                        }
+                    }
+                    current = found;
+                }
+                else
+                {
+                    int matchCount = 0;
+                    Transform found = null;
+                    for (int i = 0; i < current.childCount; i++)
+                    {
+                        var child = current.GetChild(i);
+                        if (child.name == name)
+                        {
+                            if (matchCount == index) found = child;
+                            matchCount++;
+                        }
+                    }
+                    current = found;
+                }
+
+                if (current == null) return null;
+            }
+
+            return current?.gameObject;
+        }
+
         private void AnalyzeFromSelectedGameObjects()
         {
             var selectedGameObjects = Selection.gameObjects;
+
+            if (_lastAnalyzedGameObjects != null && _lastAnalyzedGameObjects.Length > 0 && _graphData != null)
+            {
+                var graphObjects = new HashSet<GameObject>(
+                    _graphData.Nodes.Select(n => n.RepresentedObject));
+
+                bool selectionIsFromGraph = selectedGameObjects.Length > 0
+                    && selectedGameObjects.All(go => graphObjects.Contains(go));
+
+                if (selectionIsFromGraph)
+                {
+                    selectedGameObjects = _lastAnalyzedGameObjects;
+                }
+            }
+
             AnalyzeScene(selectedGameObjects);
         }
 
