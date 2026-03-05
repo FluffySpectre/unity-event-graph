@@ -31,6 +31,7 @@ namespace FluffySpectre.UnityEventGraph
         private GameObject[] _lastAnalyzedGameObjects;
         private bool _isReferenceSearchEnabled = false;
         private bool _initialized = false;
+        private IVisualElementScheduledItem _filterSchedule;
 
         [MenuItem("Window/Event Graph")]
         public static void OpenWindow()
@@ -586,7 +587,13 @@ namespace FluffySpectre.UnityEventGraph
                 _eventInvocationListPanel.AddEvent(eventData);
             }
             HighlightEventInGraph(eventData);
-            UpdateGraphViewFilters();
+            ScheduleFilterUpdate();
+        }
+
+        private void ScheduleFilterUpdate()
+        {
+            _filterSchedule?.Pause();
+            _filterSchedule = _graphView.schedule.Execute(() => UpdateGraphViewFilters());
         }
 
         private void ResetInvocationCalls()

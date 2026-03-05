@@ -9,6 +9,7 @@ namespace FluffySpectre.UnityEventGraph
     {
         private bool _isVisible = true;
         private Label _parameterLabel;
+        private IVisualElementScheduledItem _labelPositionSchedule;
 
         public static UnityEventEdge CreateEdge(EdgeData edgeData)
         {
@@ -74,13 +75,19 @@ namespace FluffySpectre.UnityEventGraph
             // Add listeners for both source and target nodes
             if (output.node is Node sourceNode)
             {
-                sourceNode.RegisterCallback<GeometryChangedEvent>(_ => UpdateParameterLabelPosition());
+                sourceNode.RegisterCallback<GeometryChangedEvent>(_ => ScheduleParameterLabelPositionUpdate());
             }
 
             if (input.node is Node targetNode)
             {
-                targetNode.RegisterCallback<GeometryChangedEvent>(_ => UpdateParameterLabelPosition());
+                targetNode.RegisterCallback<GeometryChangedEvent>(_ => ScheduleParameterLabelPositionUpdate());
             }
+        }
+
+        private void ScheduleParameterLabelPositionUpdate()
+        {
+            _labelPositionSchedule?.Pause();
+            _labelPositionSchedule = schedule.Execute(UpdateParameterLabelPosition);
         }
 
         public void SetParameterValue(string value)

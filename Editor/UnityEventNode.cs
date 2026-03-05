@@ -20,6 +20,7 @@ namespace FluffySpectre.UnityEventGraph
         private readonly Color _defaultNodeColor = new(0.2f, 0.2f, 0.2f);
 
         private bool _isVisible = true;
+        private IVisualElementScheduledItem _refreshSchedule;
 
         public UnityEventNode(string title, GameObject representedObject)
         {
@@ -29,8 +30,7 @@ namespace FluffySpectre.UnityEventGraph
             capabilities &= ~Capabilities.Deletable;
             capabilities |= Capabilities.Selectable;
 
-            RefreshExpandedState();
-            RefreshPorts();
+            ScheduleRefresh();
         }
 
         public void SetVisibility(bool visible)
@@ -62,8 +62,7 @@ namespace FluffySpectre.UnityEventGraph
 
                 UpdateNodeColor();
 
-                RefreshExpandedState();
-                RefreshPorts();
+                ScheduleRefresh();
             }
         }
 
@@ -87,8 +86,7 @@ namespace FluffySpectre.UnityEventGraph
                 UpdatePortLabel(outputPort, unityEvent);
                 UpdateNodeColor();
 
-                RefreshExpandedState();
-                RefreshPorts();
+                ScheduleRefresh();
 
                 _unityEventToPort[unityEvent] = outputPort;
             }
@@ -199,6 +197,16 @@ namespace FluffySpectre.UnityEventGraph
             }
 
             return portName;
+        }
+
+        private void ScheduleRefresh()
+        {
+            _refreshSchedule?.Pause();
+            _refreshSchedule = schedule.Execute(() =>
+            {
+                RefreshExpandedState();
+                RefreshPorts();
+            });
         }
 
         private void UpdateNodeColor()
