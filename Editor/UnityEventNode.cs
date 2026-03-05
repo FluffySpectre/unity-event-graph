@@ -121,6 +121,13 @@ namespace FluffySpectre.UnityEventGraph
             {
                 Selection.activeGameObject = RepresentedObject;
             }
+            GetFirstAncestorOfType<EventGraphView>()?.UpdateSelectionHighlighting();
+        }
+
+        public override void OnUnselected()
+        {
+            base.OnUnselected();
+            GetFirstAncestorOfType<EventGraphView>()?.UpdateSelectionHighlighting();
         }
 
         public void Highlight()

@@ -12,6 +12,7 @@ namespace FluffySpectre.UnityEventGraph
     {
         private ILayoutStrategy _layoutStrategy = new ForceDirectedLayoutStrategy();
         private Label _statsLabel;
+        private IVisualElementScheduledItem _selectionHighlightSchedule;
 
         public EventGraphView()
         {
@@ -84,6 +85,35 @@ namespace FluffySpectre.UnityEventGraph
         public void AutoLayout()
         {
             _layoutStrategy.Layout(this);
+        }
+
+        public void UpdateSelectionHighlighting()
+        {
+            _selectionHighlightSchedule?.Pause();
+            _selectionHighlightSchedule = schedule.Execute(ApplySelectionHighlighting);
+        }
+
+        private void ApplySelectionHighlighting()
+        {
+            var selectedNodes = selection.OfType<UnityEventNode>().ToList();
+
+            if (selectedNodes.Count == 0)
+            {
+                foreach (var edge in edges.OfType<UnityEventEdge>())
+                {
+                    edge.ResetSelectionHighlight();
+                }
+                return;
+            }
+
+            var selectedNodeSet = new HashSet<Node>(selectedNodes);
+
+            foreach (var edge in edges.OfType<UnityEventEdge>())
+            {
+                bool isConnected = selectedNodeSet.Contains(edge.output.node)
+                    || selectedNodeSet.Contains(edge.input.node);
+                edge.SetSelectionHighlight(isConnected);
+            }
         }
 
         private void UpdateStats()

@@ -159,5 +159,25 @@ namespace FluffySpectre.UnityEventGraph
         {
             return _isVisible;
         }
+
+        public void SetSelectionHighlight(bool isConnectedToSelection)
+        {
+            if (isConnectedToSelection)
+            {
+                edgeControl.edgeWidth = 4;
+                style.opacity = 1f;
+            }
+            else
+            {
+                edgeControl.edgeWidth = 2;
+                style.opacity = 0.15f;
+            }
+        }
+
+        public void ResetSelectionHighlight()
+        {
+            edgeControl.edgeWidth = 2;
+            style.opacity = 1f;
+        }
     }
 }
