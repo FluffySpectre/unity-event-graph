@@ -6,6 +6,7 @@ namespace FluffySpectre.UnityEventGraph
         GridLayout,
         RadialLayout,
         SharedEdgesClusterLayout,
+        HierarchicalLayout,
     }
 
     public interface ILayoutStrategy

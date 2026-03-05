@@ -617,6 +617,7 @@ namespace FluffySpectre.UnityEventGraph
                 LayoutStrategyType.GridLayout => new GridLayoutStrategy(),
                 LayoutStrategyType.RadialLayout => new RadialLayoutStrategy(),
                 LayoutStrategyType.SharedEdgesClusterLayout => new SharedEdgesClusterLayoutStrategy(),
+                LayoutStrategyType.HierarchicalLayout => new HierarchicalLayoutStrategy(),
                 _ => new ForceDirectedLayoutStrategy()
             };
 
