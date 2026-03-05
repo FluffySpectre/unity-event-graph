@@ -5,7 +5,6 @@ namespace FluffySpectre.UnityEventGraph
         ForceDirectedLayout,
         GridLayout,
         RadialLayout,
-        SharedEdgesClusterLayout,
         HierarchicalLayout,
     }
 
