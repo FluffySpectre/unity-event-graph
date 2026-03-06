@@ -125,59 +125,85 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
         private List<List<UnityEventNode>> AssignLayers(List<UnityEventNode> component, Dictionary<UnityEventNode, List<UnityEventNode>> successors, Dictionary<UnityEventNode, List<UnityEventNode>> predecessors)
         {
             var componentSet = new HashSet<UnityEventNode>(component);
-            var layerMap = new Dictionary<UnityEventNode, int>();
 
-            // Find root nodes (no predecessors within this component)
+            // DFS-based topological sort (back edges are skipped to break cycles)
+            var visited = new HashSet<UnityEventNode>();
+            var inStack = new HashSet<UnityEventNode>();
+            var topoOrder = new List<UnityEventNode>();
+
             var roots = component.Where(n =>
                 !predecessors[n].Any(p => componentSet.Contains(p))).ToList();
-
-            // If no roots found (pure cycle), pick an arbitrary start
             if (roots.Count == 0)
                 roots.Add(component[0]);
 
-            // BFS-based longest-path layering
-            var queue = new Queue<UnityEventNode>();
             foreach (var root in roots)
-            {
-                layerMap[root] = 0;
-                queue.Enqueue(root);
-            }
-
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                int currentLayer = layerMap[current];
-
-                foreach (var succ in successors[current])
-                {
-                    if (!componentSet.Contains(succ))
-                        continue;
-
-                    int newLayer = currentLayer + 1;
-                    if (!layerMap.ContainsKey(succ) || layerMap[succ] < newLayer)
-                    {
-                        layerMap[succ] = newLayer;
-                        queue.Enqueue(succ);
-                    }
-                }
-            }
-
-            // Assign any unvisited nodes (isolated within component) to layer 0
+                TopologicalSortDfs(root, successors, componentSet, visited, inStack, topoOrder);
             foreach (var node in component)
+            {
+                if (!visited.Contains(node))
+                    TopologicalSortDfs(node, successors, componentSet, visited, inStack, topoOrder);
+            }
+
+            topoOrder.Reverse();
+
+            // Build topological position map for back-edge detection
+            var topoPosition = new Dictionary<UnityEventNode, int>();
+            for (int i = 0; i < topoOrder.Count; i++)
+                topoPosition[topoOrder[i]] = i;
+
+            // Longest-path layering in O(V+E), skipping back edges
+            var layerMap = new Dictionary<UnityEventNode, int>();
+            foreach (var node in topoOrder)
             {
                 if (!layerMap.ContainsKey(node))
                     layerMap[node] = 0;
+
+                foreach (var succ in successors[node])
+                {
+                    if (!componentSet.Contains(succ))
+                        continue;
+                    if (topoPosition[succ] <= topoPosition[node])
+                        continue; // Back edge - skip to break cycle
+
+                    int newLayer = layerMap[node] + 1;
+                    if (!layerMap.ContainsKey(succ) || layerMap[succ] < newLayer)
+                        layerMap[succ] = newLayer;
+                }
             }
 
             // Group nodes by layer
-            int maxLayer = layerMap.Values.Max();
+            int maxLayer = layerMap.Count > 0 ? layerMap.Values.Max() : 0;
             var layers = new List<List<UnityEventNode>>();
             for (int i = 0; i <= maxLayer; i++)
-            {
                 layers.Add(component.Where(n => layerMap[n] == i).ToList());
-            }
 
             return layers;
+        }
+
+        private void TopologicalSortDfs(UnityEventNode node,
+            Dictionary<UnityEventNode, List<UnityEventNode>> successors,
+            HashSet<UnityEventNode> componentSet,
+            HashSet<UnityEventNode> visited,
+            HashSet<UnityEventNode> inStack,
+            List<UnityEventNode> topoOrder)
+        {
+            if (visited.Contains(node))
+                return;
+
+            visited.Add(node);
+            inStack.Add(node);
+
+            foreach (var succ in successors[node])
+            {
+                if (!componentSet.Contains(succ) || visited.Contains(succ))
+                    continue;
+                if (inStack.Contains(succ))
+                    continue; // Back edge - skip to break cycle
+                TopologicalSortDfs(succ, successors, componentSet, visited, inStack, topoOrder);
+            }
+
+            inStack.Remove(node);
+            topoOrder.Add(node);
         }
 
         private void MinimizeCrossings(List<List<UnityEventNode>> layers, Dictionary<UnityEventNode, List<UnityEventNode>> successors, Dictionary<UnityEventNode, List<UnityEventNode>> predecessors)
