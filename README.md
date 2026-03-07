@@ -11,7 +11,7 @@ Visualizes UnityEvents in a scene as a graph.
 Open the Package Manager in Unity (`Window` > `Package Manager`), click on the "+" button, select "Add package from git URL...", and paste the following URL:
 
 ```
-https://github.com/FluffySpectre/unity-event-graph.git#1.0.1
+https://github.com/FluffySpectre/unity-event-graph.git#1.1.2
 ```
 
 Alternatively, you can add the following line to your manifest.json file located in the Packages directory of your Unity project:
