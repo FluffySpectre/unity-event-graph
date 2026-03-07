@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace FluffySpectre.UnityEventGraph.LayoutStrategies
 {
@@ -15,6 +16,14 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
         private const float MaxRowWidth = 20000f;
         private const float ComponentPadding = 400f;
 
+        private struct PortEdge
+        {
+            public UnityEventNode Source;
+            public UnityEventNode Target;
+            public float SourcePortOffset;
+            public float TargetPortOffset;
+        }
+
         public void Layout(EventGraphView graphView)
         {
             var nodes = graphView.nodes.ToList().OfType<UnityEventNode>().ToList();
@@ -25,11 +34,15 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
 
             var successors = new Dictionary<UnityEventNode, List<UnityEventNode>>();
             var predecessors = new Dictionary<UnityEventNode, List<UnityEventNode>>();
+            var incomingPortEdges = new Dictionary<UnityEventNode, List<PortEdge>>();
+            var outgoingPortEdges = new Dictionary<UnityEventNode, List<PortEdge>>();
 
             foreach (var node in nodes)
             {
                 successors[node] = new List<UnityEventNode>();
                 predecessors[node] = new List<UnityEventNode>();
+                incomingPortEdges[node] = new List<PortEdge>();
+                outgoingPortEdges[node] = new List<PortEdge>();
             }
 
             foreach (var edge in edges)
@@ -40,6 +53,16 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
                 {
                     successors[source].Add(target);
                     predecessors[target].Add(source);
+
+                    var portEdge = new PortEdge
+                    {
+                        Source = source,
+                        Target = target,
+                        SourcePortOffset = GetPortOffset(source.outputContainer, edge.output),
+                        TargetPortOffset = GetPortOffset(target.inputContainer, edge.input)
+                    };
+                    outgoingPortEdges[source].Add(portEdge);
+                    incomingPortEdges[target].Add(portEdge);
                 }
             }
 
@@ -51,7 +74,7 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
             foreach (var component in components)
             {
                 var layers = AssignLayers(component, successors, predecessors);
-                MinimizeCrossings(layers, successors, predecessors);
+                MinimizeCrossings(layers, incomingPortEdges, outgoingPortEdges);
 
                 float width = layers.Count * LayerSpacing;
                 float height = layers.Max(l => l.Count) * NodeSpacing;
@@ -206,45 +229,59 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
             topoOrder.Add(node);
         }
 
-        private void MinimizeCrossings(List<List<UnityEventNode>> layers, Dictionary<UnityEventNode, List<UnityEventNode>> successors, Dictionary<UnityEventNode, List<UnityEventNode>> predecessors)
+        private void MinimizeCrossings(List<List<UnityEventNode>> layers,
+            Dictionary<UnityEventNode, List<PortEdge>> incomingPortEdges,
+            Dictionary<UnityEventNode, List<PortEdge>> outgoingPortEdges)
         {
             if (layers.Count <= 1)
                 return;
 
-            // Build position lookup for barycenter computation
             for (int sweep = 0; sweep < BarycenterSweeps; sweep++)
             {
-                // Forward sweep (layer 1 to last)
+                // Forward sweep (layer 1 to last) - sort by predecessors' output port positions
                 for (int i = 1; i < layers.Count; i++)
                 {
                     var prevLayerSet = new HashSet<UnityEventNode>(layers[i - 1]);
-                    SortLayerByBarycenter(layers[i], layers[i - 1], prevLayerSet, predecessors);
+                    SortLayerByBarycenter(layers[i], layers[i - 1], prevLayerSet, incomingPortEdges, isForward: true);
                 }
 
-                // Backward sweep (second-to-last to layer 0)
+                // Backward sweep (second-to-last to layer 0) - sort by successors' input port positions
                 for (int i = layers.Count - 2; i >= 0; i--)
                 {
                     var nextLayerSet = new HashSet<UnityEventNode>(layers[i + 1]);
-                    SortLayerByBarycenter(layers[i], layers[i + 1], nextLayerSet, successors);
+                    SortLayerByBarycenter(layers[i], layers[i + 1], nextLayerSet, outgoingPortEdges, isForward: false);
                 }
             }
         }
 
-        private void SortLayerByBarycenter(List<UnityEventNode> layer, List<UnityEventNode> referenceLayer, HashSet<UnityEventNode> referenceSet, Dictionary<UnityEventNode, List<UnityEventNode>> adjacency)
+        private void SortLayerByBarycenter(List<UnityEventNode> layer, List<UnityEventNode> referenceLayer,
+            HashSet<UnityEventNode> referenceSet, Dictionary<UnityEventNode, List<PortEdge>> portEdges,
+            bool isForward)
         {
             // Build position map for the reference layer
             var positionMap = new Dictionary<UnityEventNode, int>();
             for (int i = 0; i < referenceLayer.Count; i++)
                 positionMap[referenceLayer[i]] = i;
 
-            // Compute barycenter for each node in the layer
+            // Compute port-aware barycenter for each node in the layer
             var barycenters = new Dictionary<UnityEventNode, float>();
             foreach (var node in layer)
             {
-                var neighbors = adjacency[node].Where(n => referenceSet.Contains(n)).ToList();
-                if (neighbors.Count > 0)
+                var relevantEdges = portEdges[node]
+                    .Where(e => referenceSet.Contains(isForward ? e.Source : e.Target))
+                    .ToList();
+
+                if (relevantEdges.Count > 0)
                 {
-                    barycenters[node] = (float)neighbors.Average(n => positionMap[n]);
+                    float sum = 0f;
+                    foreach (var edge in relevantEdges)
+                    {
+                        var refNode = isForward ? edge.Source : edge.Target;
+                        // Use the port offset on the reference-layer side to break ties
+                        var portOffset = isForward ? edge.SourcePortOffset : edge.TargetPortOffset;
+                        sum += positionMap[refNode] + portOffset;
+                    }
+                    barycenters[node] = sum / relevantEdges.Count;
                 }
                 else
                 {
@@ -254,6 +291,24 @@ namespace FluffySpectre.UnityEventGraph.LayoutStrategies
             }
 
             layer.Sort((a, b) => barycenters[a].CompareTo(barycenters[b]));
+        }
+
+        private static float GetPortOffset(VisualElement container, VisualElement port)
+        {
+            int count = container.childCount;
+            if (count <= 1)
+                return 0f;
+
+            int index = 0;
+            foreach (var child in container.Children())
+            {
+                if (child == port)
+                    break;
+                index++;
+            }
+
+            // Normalize to [-0.5, 0.5] so port order breaks ties without overriding node position
+            return (float)index / (count - 1) - 0.5f;
         }
 
         private void AssignCoordinates(List<List<UnityEventNode>> layers, float offsetX, float offsetY)
